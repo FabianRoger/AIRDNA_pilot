@@ -1,0 +1,1047 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This scripts follows [this toutorial](https://git.metabarcoding.org/obitools/obitools3/wikis/Wolf-tutorial-with-the-OBITools3) to create a custom reference database with the EMBL data 
+
+
+```{r}
+require("RCurl") 
+library(httr)
+library(dplyr)
+library(tidyr)
+library(here)
+library(ggplot2)
+library(readr)
+library(DECIPHER)
+library(stringr)
+library(pblapply)
+library(taxize)
+library(fastmatch)
+library(reticulate)
+```
+
+#download EMBL data
+
+download EMBL data
+```{bash, eval= FALSE}
+#cd /Volumes/Elements/
+#mkdir EMBL
+```
+
+
+list all nt files from EMBL
+```{r}
+url <- "ftp://ftp.ebi.ac.uk/pub/databases/embl/release/std/"
+
+
+results <- getURL(url,verbose=TRUE,ftp.use.epsv=TRUE, dirlistonly = TRUE)
+results <- unlist(strsplit(results, "\n"))
+
+results <- results[grepl("_std_", results)]
+
+lapply(results, function(x) strsplit(x, "_")[[1]][3]) %>% 
+  unlist() %>% 
+  table()
+
+```
+
+we download all but the `Synthetic` (syn), `Transgenic` (tgn), `Human` (hum) and `Mus musculus` (mus) and `Environmental samples` (env) and `Unclassified` (unc)
+
+While we will need some human & mice sequences in the reference db we can add them later and don't need to download *all* sequences from mice and humans for these two species. The Environmental samples don't have taxonomic information and thus don't help us to assign a species
+
+we download the following files:
+```{r}
+
+results <- results[grepl("_fun_|_inv_|_mam_|_phg_|_pln_|_pro_|_rod_|_vrl_|_vrt_", results)]
+
+results
+```
+
+
+```{r}
+diskurl <- "/Volumes/Elements/EMBL/"
+
+for (i in results) {
+  
+  if( ! file.exists(paste(diskurl, i, sep = ""))){
+    
+    message(paste("downloading file ", which(results == i), "out of", length(results), " :", i))
+    
+    GET(
+      paste(url, i, sep = ""),
+      write_disk(paste(diskurl, i, sep = "")),
+      progress())
+  }
+}
+
+
+```
+
+
+
+#activate obitools
+```{bash}
+cd /Applications/OBITools/obitools3
+source obi3-env/bin/activate
+```
+
+
+#import into DMS
+importing the files in the DMS (copy paste into bash window)
+```{bash}
+cd /Volumes/Elements/
+obi import --embl /Volumes/Elements/EMBL /Volumes/Elements/EMBL_dms/EMBL_ref
+
+```
+
+#download taxdump
+download taxdump
+```{r}
+taxurl <- "ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
+
+GET(taxurl,
+    write_disk("/Volumes/Elements/taxdump.tar.gz"),
+    progress())
+
+
+```
+
+import taxdump into DMS
+```{bash}
+obi import --taxdump /Volumes/Elements/taxdump.tar.gz /Volumes/Elements/EMBL_dms/taxonomy/my_tax
+```
+
+
+#COI
+COI primers:
+
+Elbrecht, Vasco, Thomas W.A. Braukmann, Natalia V. Ivanova, Sean W.J. Prosser, Mehrdad Hajibabaei, Michael Wright, Evgeny V. Zakharov, Paul D.N. Hebert, and Dirk Steinke. 2019. “Validation of COI Metabarcoding Primers for Terrestrial Arthropods.” PeerJ 7 (October): e7745. https://doi.org/10.7717/peerj.7745.
+
+```{r}
+#COI
+data.frame(`.` = c( "sequence","direction","length"),
+           BF3 = c( "CCHGAYATRGCHTTYCCHCG", "foward", nchar("CCHGAYATRGCHTTYCCHCG")),
+           BR2 = c( "TCDGGRTGNCCRAARAAYCA", "reverse", nchar("TCDGGRTGNCCRAARAAYCA")),
+           `expected length` = c(418, NA, NA)) 
+
+```
+
+
+##ecopcr
+
+ecopcr does an *in silico* PCR amplification and keeps the amplified fragment. However the reverse primer (BR2) bind at the same binding site as all classical COI primer for the Folmer region (e.g. HCO2198, Folmer et al 1994). Therefore many published sequences do not have the primer binding site and will not be amplified in silico. 
+
+I therefore amplify the sequence with a different but equally degenerated primer that binds earlier. I use BR1 (Elbrecht and Lesse 2017) that binds at site 560 and thus ~100 bp before BR2. 
+
+BR1: ARYATDGTRATDGCHCCDGC
+
+```{bash}
+obi ecopcr --keep-nucs 200 -e 2 -l 450  -L 600 -F CCHGAYATRGCHTTYCCHCG -R ARYATDGTRATDGCHCCDGC --taxonomy /Volumes/Elements/EMBL_dms/taxonomy/my_tax /Volumes/Elements/EMBL_dms/EMBL_ref /Volumes/Elements/EMBL_dms/COI_BF3_BR1_refs
+```
+
+check the number of sequences
+
+```{bash}
+obi count /Volumes/Elements/EMBL_dms/COI_BF3_BR1_refs
+```
+
+2020-05-05 09:22:27,378 [count : INFO ]  obi count
+2540117 2540117
+
+We have 2540117 sequences
+
+Now we run obi grep to discard sequences with no information at family, genus and species level. 
+```{bash}
+obi grep --require-rank=species --require-rank=genus --require-rank=family --taxonomy /Volumes/Elements/EMBL_dms/taxonomy/my_tax /Volumes/Elements/EMBL_dms/COI_BF3_BR1_refs /Volumes/Elements/EMBL_dms/COI_BF3_BR1_clean
+```
+
+check how many species we have left
+
+```{bash}
+obi count /Volumes/Elements/EMBL_dms/COI_BF3_BR1_clean
+```
+
+2020-04-28 12:46:11,389 [count : INFO ]  obi count
+1986914 1986914
+
+##annotate refDB
+
+```{bash}
+cd /Applications/OBITools/obitools3
+source obi3-env/bin/activate
+
+obi annotate --with-taxon-at-rank superkingdom --with-taxon-at-rank kingdom --with-taxon-at-rank phylum --with-taxon-at-rank class --with-taxon-at-rank order --with-taxon-at-rank family --with-taxon-at-rank subfamily --with-taxon-at-rank genus --taxonomy /Volumes/Elements/EMBL_dms/taxonomy/my_tax /Volumes/Elements/EMBL_dms/COI_BF3_BR1_clean /Volumes/Elements/EMBL_dms/COI_BF3_BR1_clean_annotated
+```
+
+
+##export 
+```{bash}
+cd /Applications/OBITools/obitools3
+source obi3-env/bin/activate
+
+obi export --tab-output --header /Volumes/Elements/EMBL_dms/COI_BF3_BR1_clean_annotated > ~/Documents/01_Work/01_Research/15_eDNA/Data/COI_refDB.txt
+
+```
+export sequences as fasta file
+```{bash}
+cd /Applications/OBITools/obitools3
+source obi3-env/bin/activate
+
+obi export --fasta /Volumes/Elements/EMBL_dms/COI_BF3_BR1_clean_annotated > /Volumes/Elements/BLAST/COI_refDB.fasta
+```
+
+## rename seqs
+
+We have exported the sequence metadata (including taxonomic annotation) into the `16S_refDB.txt` file. We therefore can keep only the identifier as sequence names and rename after clustering with consensus taxonomy. 
+
+```{r}
+refseqCOI <- readDNAStringSet("/Volumes/Elements/BLAST/COI_refDB.fasta")
+
+names(refseqCOI) <- gsub("([A-Z,0-9]+).+", "\\1", names(refseqCOI))
+
+writeXStringSet(refseqCOI, "/Volumes/Elements/BLAST/COI_refDB.fasta")
+```
+
+##import BOLD
+
+Here I load and merge the two subset from the BOLD Database that I downloaded: all Arthropods and all nordic species. 
+
+```{r}
+BOLD_all_art <- readDNAStringSet("/Volumes/Elements/BLAST/BOLD_ref.fasta")
+
+BOLD_nordic <- readDNAStringSet("/Volumes/Elements/BLAST/BOLD_ref_Nordic_BIN.fasta")
+
+#remove insect as they are in BOLD_all_art
+BOLD_nordic <- BOLD_nordic[!grepl("Arthropoda", names(BOLD_nordic))]
+```
+
+
++ join BOLD DBs
+
+```{r}
+BOLD_COI <- c(BOLD_all_art, BOLD_nordic)
+
+BOLD_COI <- RemoveGaps(BOLD_COI)
+
+BOLD_tax <- 
+  tibble(names = names(BOLD_COI)) %>% 
+  mutate(ID = paste("boldseq", formatC(1:n(), width=nchar(n()), flag = 0), sep = "_"))
+
+ranks <- c( "Phylum", "Class", "Order", "Family", "Subfamily", "Genus", "Species")
+
+BOLD_tax <- 
+  BOLD_tax %>% 
+  select(ID, names) %>% 
+  separate(names, ranks, sep = ";")
+
+saveRDS(BOLD_tax, here("Data", "BOLD_tax.RDS"))
+```
+
+rename BOLD_COI seqs with sequence code
+```{r}
+names(BOLD_COI) <- BOLD_tax$ID
+```
+
+filter out sequences without genus and family name 
+
+```{r}
+
+BOLD_excl <- 
+  BOLD_tax %>% 
+  filter(Species == "NA" & Genus == "NA" & Family == "NA") %>% 
+  pull(ID)
+
+
+BOLD_COI <- BOLD_COI[! names(BOLD_COI) %in% BOLD_excl]
+```
+
+merge with embl seqs and export
+
+```{r}
+COI_full <- c(BOLD_COI, refseqCOI)
+
+writeXStringSet(COI_full, "/Volumes/Elements/BLAST/COI_full.fasta")
+```
+
+##cluster sequences
+
+```{bash}
+/Applications/vsearch/bin/vsearch --threads 4 --cluster_fast /Volumes/Elements/BLAST/COI_full.fasta --centroids /Volumes/Elements/BLAST/COI_full_99.fasta --id 0.99 --uc /Volumes/Elements/BLAST/COI_full_99.txt
+```
+
+#remove Ns
+
+```{r}
+COI_full_99 <- readDNAStringSet("/Volumes/Elements/BLAST/COI_full_99.fasta")
+
+COI_full_99 %>% 
+  as.character() %>% 
+  paste(collapse = "") %>% 
+  strsplit("") %>% 
+  unlist %>% 
+  unique
+  
+COI_full_clean <- clean(COI_full_99)
+
+writeXStringSet(COI_full_clean, "/Volumes/Elements/BLAST/COI_full_99_clean.fasta")
+```
+
+
+## predict phylum
+```{bash}
+alfie -f /Volumes/Elements/BLAST/COI_full_99_clean.fasta
+```
+
+
+```{r}
+alfi_files <- list.files("alfie_out") 
+alfi_files <- alfi_files[grep( "COI_full_99_clean.fasta", alfi_files)]
+
+phylum_pred <- tibble(seq = character(),
+                      phylum = character())
+
+for(i in seq_along(alfi_files)){
+  phyl_fast <- readDNAStringSet(here("alfie_out", alfi_files[i]))
+  phylum_temp <- tibble(seq = names(phyl_fast),
+                        phylum = strsplit(alfi_files[i], "_")[[1]][1])
+  phylum_pred <- bind_rows(phylum_pred,phylum_temp)
+}
+
+phylum_pred %>% 
+  group_by(phylum) %>% 
+  summarise(n=n())
+```
+
+
+## find consensus taxonomy
+
+We now have 4 files: 
+ (1) the fasta file with the centroid sequences from the 99% clustering
+ (2) the text file telling us what sequences were clustered to what centroid
+ (3) the two metadata files giving us the taxonomic annotation (from EMBL and BOLD) off all sequences (the centroids and the ones that have been clustered)
+ (4) the predicted phylum for each centroid from the alfie package
+ 
+ We read in all 4 files 
+
+```{r}
+
+# import centroid seqeunces
+COI_full_99 <- readDNAStringSet("/Volumes/Elements/BLAST/COI_full_99.fasta")
+
+# import cluster information 
+Cluster_ID_COI <-  read_tsv("/Volumes/Elements/BLAST/COI_full_99.txt", col_names = FALSE)
+
+#filter only sequences that have been clusterd
+Cluster_ID_COI <- 
+Cluster_ID_COI %>% filter(X1 != "C") %>% 
+  dplyr::rename(seq = X9, Type = X1, match = X10, pident = X4) %>% 
+  select(seq, Type, match, pident) %>% 
+  filter(Type == "H" ) %>% 
+  arrange(match)
+
+#import taxonomic annotation from embl
+refDB_COI <- read_tsv("~/Documents/01_Work/01_Research/15_eDNA/Data/COI_refDB.txt")
+
+refDB_COI <- refDB_COI %>% 
+  select(ID, ends_with("_name"))
+
+colnames(refDB_COI) <- gsub("(.?)_name","\\1", colnames(refDB_COI))
+
+refDB_COI <- filter(refDB_COI, ID %in% unique(c(Cluster_ID_COI$seq, Cluster_ID_COI$match)))
+
+refDB_COI <- select(refDB_COI, ID, superkingdom, kingdom, phylum, class, order, family, genus, species)
+
+# import taxonomic annotation from BOLD seqs
+BOLD_tax <- readRDS(here("Data", "BOLD_tax.RDS"))
+
+colnames(BOLD_tax)[-1] <- tolower(colnames(BOLD_tax)[-1])
+
+#join both but add identifier for DB
+refDB_COI <- 
+  refDB_COI %>% 
+  mutate(db = "embl") %>% 
+  bind_rows(refDB_COI, mutate(BOLD_tax, db = "bold"))
+```
+
+because the taxonomic annotation is not alwas coherent between the embl and the bold database, we use the gbif api to resolve synonymes and get a coherent taxonomic annotation from all species
+
+```{r}
+refDB_COI <- 
+  select(refDB_COI, -subfamily)
+
+spec_uniq <- select(refDB_COI, kingdom, phylum, class, order, family, species) %>% distinct()
+
+plan(multisession)
+
+gbif_specnames <- 
+future_map(1:nrow(spec_uniq), function(x) {
+  name_backbone(name = spec_uniq$species[x], 
+                rank = "species", 
+                kingdom = spec_uniq$kingdom[x],
+                phylum = spec_uniq$phylum[x],
+                class = spec_uniq$class[x],
+                order = spec_uniq$order[x],
+                family = spec_uniq$family[x])
+},
+.progress = TRUE) %>% bind_rows()
+
+gbif_specnames_join <-  
+  gbif_specnames %>% 
+  select(scientificName, rank, status, confidence, kingdom, phylum, class, order, family, genus, species)
+
+colnames(gbif_specnames_join) <- paste(colnames(gbif_specnames_join), "gbif", sep = "_")
+
+gbif_specnames_join <-  
+  bind_cols(spec_uniq, gbif_specnames_join)
+
+refDB_COI <- 
+left_join(refDB_COI, gbif_specnames_join)
+
+refDB_COI <- refDB_COI %>% 
+  select(ID, db, confidence_gbif, kingdom_gbif, phylum_gbif,
+                    class_gbif, order_gbif, family_gbif,
+                    genus_gbif, species_gbif)
+
+colnames(refDB_COI) <- gsub("(.?)_gbif", "\\1", colnames(refDB_COI))
+
+
+```
+
+Here I generate a named list of all centroid sequences, which contains the phylogentic annotation for the centroid sequence itself as well as all sequences clustered to that centroid
+
+```{r}
+Cluster_ID_COI_list <- 
+split(Cluster_ID_COI, Cluster_ID_COI$match)
+
+plan(multisession)
+
+Cluster_list_dfs <-
+future_map(names(Cluster_ID_COI_list), function(x){
+  
+  clust_seq <- Cluster_ID_COI_list[[x]]$seq
+  refDB_COI[fmatch(c(x, clust_seq), refDB_COI$ID),]
+  
+},
+.progress = T)
+
+names(Cluster_list_dfs) <- names(Cluster_ID_COI_list)
+
+saveRDS(Cluster_list_dfs, here("Data", "Cluster_list_dfs.RDS"))
+```
+
+
+```{r}
+Cluster_list_dfs <- readRDS(here("Data", "Cluster_list_dfs.RDS"))
+```
+which clusters have disagreement on the phylum level (among seqs and with predicted phylum?)
+
+```{r}
+
+plan(multisession(workers = 3))
+
+cluster_ntax <- 
+future_map(names(Cluster_list_dfs), function(x){
+  
+  cluster <- x
+  
+  x <- Cluster_list_dfs[[x]]
+  
+  nspec <- x %>% 
+    select(-ID) %>% 
+    distinct() %>% 
+    nrow()
+  
+  ngen <- x %>% 
+    select(-ID, - species) %>% 
+    distinct() %>% 
+    nrow()
+  
+  nfam <- x %>% 
+    select(-ID, - species, -genus) %>% 
+    distinct() %>% 
+    nrow()
+  
+  tibble(cluster = cluster,
+          nfam = nfam,
+         ngen = ngen,
+         nspec = nspec
+        )
+  
+},
+.progress = TRUE) %>% bind_rows()
+
+
+Cluster_list_dfs[567]
+
+phylum_pred %>% filter(seq == "AB482190")
+```
+
+
+
+which clusters have fully coherent taxonomic assignments (Superkingdom to species)?
+
+```{r}
+
+plan(multisession(workers = 3))
+
+cluster_ntax <- 
+future_map(names(Cluster_list_dfs), function(x){
+  
+  cluster <- x
+  
+  x <- Cluster_list_dfs[[x]]
+  
+  nspec <- x %>% 
+    select(-ID) %>% 
+    distinct() %>% 
+    nrow()
+  
+  ngen <- x %>% 
+    select(-ID, - species) %>% 
+    distinct() %>% 
+    nrow()
+  
+  nfam <- x %>% 
+    select(-ID, - species, -genus) %>% 
+    distinct() %>% 
+    nrow()
+  
+  tibble(cluster = cluster,
+          nfam = nfam,
+         ngen = ngen,
+         nspec = nspec
+        )
+  
+},
+.progress = TRUE) %>% bind_rows()
+
+saveRDS(cluster_ntax, here("Data", "cluster_ntax_coi.RDS"))
+
+
+Cluster_list_dfs$boldseq_0287276
+
+refDB_COI %>% filter(ID == "AY253012")
+```
+
++ rename sequences to include subfamily slot if missing (as is the case for seqs from BOLD_nordic)
++ rename sequences to remove Species name 
++ grep for sequences with genus level information 
+```{r}
+
+names_BOLD = str_split(names(BOLD_COI), ";")
+
+names_BOLD <- 
+pblapply(names_BOLD, function(x){
+  
+  if(length(x) == 7){
+    
+    x[7] <- gsub(paste(x[6], " ", sep = ""), "", x[7], fixed = TRUE) 
+    x[7] <- gsub("\\s", "_", x[7])
+    return(x)
+  
+    } else if(length(x) == 6){
+      
+      x[7] <- x[6]
+      x[6] <- x[5]
+      x[5] <- "NA"
+      return(x)
+    
+  }
+})
+
+
+Seq_with_Genus <- pblapply(names_BOLD, function(x) x[6] != "NA")
+
+#rename BOLD
+
+names_BOLD_col <- 
+  pblapply(names_BOLD, paste0, collapse=";") %>% 
+    unlist()
+
+names(BOLD_COI) <- names_BOLD_col
+
+# subset for seqs with genus information  
+Seq_with_Genus <- unlist(Seq_with_Genus)
+
+sum(Seq_with_Genus)
+
+BOLD_COI <- BOLD_COI[Seq_with_Genus]
+```
+
++ export
+
+```{r}
+writeXStringSet(BOLD_COI, "/Volumes/Elements/BLAST/BOLD_merged_ref.fasta", format = "fasta")
+```
+
+
+dereplicate sequences
+
+```{bash}
+
+/Applications/vsearch/bin/vsearch --derep_fulllength /Volumes/Elements/BLAST/BOLD_merged_ref.fasta --output /Volumes/Elements/BLAST/BOLD_merged_ref_derep.fasta 
+
+```
+
++ make blast refdb
+
+```{bash}
+makeblastdb -in /Volumes/Elements/BLAST/BOLD_merged_ref_derep.fasta -input_type 'fasta' -dbtype 'nucl'
+```
+
++ blastn against db
+
+```{bash}
+blastn -num_threads 4 -query ~/Documents/01_Work/01_Research/15_eDNA/Data/COI_clustered_99.fasta -db /Volumes/Elements/BLAST/BOLD_merged_ref_derep.fasta -max_target_seqs 20 -out ~/Documents/01_Work/01_Research/15_eDNA/Data/BOLD_merged_blast.txt -outfmt '6 qseqid sseqid pident qstart qend  bitscore length  nident'  
+```
+
+
+## BLAST COI merged
+
++ read in refDB 
+```{r}
+COI_ref <- readDNAStringSet("/Volumes/Elements/BLAST/COI_BF3_BR1.fasta") 
+```
+
++ extract taxonomic annotation from refDB to format names as in BOLD (7 levels)
+```{r}
+
+ID_DF <- names(COI_ref)
+
+Taxonomy_df <- 
+  str_sub(ID_DF, 9) %>% 
+  str_split(";") %>% 
+  pblapply(function(x) x[grepl("_name", x)]) %>% 
+  pblapply(function(x) {
+    z <- as.list(gsub("\\s*[a-z]+_name=(.+)", "\\1", x))
+    names(z) <- gsub("\\s*([a-z]+)_name=.+", "\\1", x)
+    return(z)
+    }) %>% 
+  bind_rows()
+
+Taxonomy_with_genus <- 
+  Taxonomy_df %>% 
+  mutate(has_genus = !is.na(genus)) %>% 
+  pull(has_genus)
+
+Taxonomy_df <- 
+  Taxonomy_df %>% 
+  select(phylum, class, order, family, subfamily, genus, species) %>% 
+  mutate(name = ID_DF)
+```
+
+rename sequences with taxonomy
+```{r}
+Taxonomy_rename <- 
+Taxonomy_df %>% 
+  unite(tax_col, phylum, class, order, family, subfamily, genus, species, sep = ";")
+
+all(names(COI_ref) == Taxonomy_rename$name)
+
+names(COI_ref) <- Taxonomy_rename$tax_col
+```
+
+exclude sequences without genus name
+```{r}
+COI_ref <- COI_ref[Taxonomy_with_genus]
+```
+
+remove Ns at start and end of sequences
+```{r}
+COI_ref <- 
+lapply(COI_ref, function(x) {
+  gsub("N*([ACGTMRWSYKVHDB]+)N*", "\\1", x)
+}) %>% unlist %>% DNAStringSet()
+```
+
++read in BOLD data
+
+```{r}
+BOLD <- readDNAStringSet("/Volumes/Elements/BLAST/all_COI.fasta")
+```
+
++ rename BOLD and EMBL data with origin prefix and continious sequence numbering, and store taxonomy separately. 
+
+(for sequence tracing after clustering)
+
+```{r}
+seqnames <- 
+  tibble(taxonomy = c(names(BOLD), names(COI_ref)),
+                   origin = c(rep("BOLD", length(BOLD)),
+                              rep("EMBL", length(COI_ref)))) %>% 
+  mutate(seqname = paste("seq_", 
+                         str_pad(1:n(), width = nchar(n()), side = "left", pad = "0"),
+                         sep = ""))
+
+save(seqnames, file = "/Volumes/Elements/BLAST/seqnames.RData")
+load("/Volumes/Elements/BLAST/seqnames.RData")
+```
+
+
+```{r}
+allCOI <- c(BOLD, COI_ref)
+names(allCOI) <- seqnames$seqname
+
+writeXStringSet(allCOI, "/Volumes/Elements/BLAST/all_COI.fasta", format = "fasta")
+```
+
+###dereplication
+dereplicate sequences
+
+```{bash}
+
+/Applications/vsearch/bin/vsearch --derep_fulllength /Volumes/Elements/BLAST/all_COI.fasta --output /Volumes/Elements/BLAST/all_COI_derep.fasta 
+
+```
+
+###trimming
+use cutadapt to trimm the sequences to my primers in two steps: 
+
+1) I filter reads that have at least the foward primer and discard reads that don't have it
+2) I trim reads after the reverse primer but also keep reads that do not include the reverse primer (as it is at the very end of the folmer region and many published sequences don't include it)
+
+```{r}
+Fwrd <- "CCHGAYATRGCHTTYCCHCG"
+minlength <- 300
+Cores <- 4
+e_rate <- 0.15
+
+system(
+paste("source /Users/fabian/my_env/bin/activate
+       cutadapt  --front ", Fwrd,
+      " --minimum-length=", minlength, #minimum length for sequences after trimming
+      " --error-rate=", e_rate, #error rate. The primer is 20 bp long, so we allow 3 errors
+      " --discard-untrimmed", #discar reads that do not contain the forward primer
+      " --cores=", Cores, # Number of cores to use
+      " -o /Volumes/Elements/BLAST/all_COI_trimmed_fwrd.fasta ",
+      "/Volumes/Elements/BLAST/all_COI_derep.fasta",
+      sep = ""
+      ),
+
+intern = FALSE
+)
+
+```
+
+
+```{r}
+Rev <-  "TCDGGRTGNCCRAARAAYCA"
+RevComp <- reverseComplement(DNAString(Rev))
+minlength <- 300
+maxlength <- 800
+Cores <- 4
+
+system(
+paste("source /Users/fabian/my_env/bin/activate
+       cutadapt --adapter ", RevComp,
+      " --minimum-length=", minlength, #minimum length for sequences after trimming
+      " --maximum-length=", maxlength, #maximum length for sequences after trimming
+      " --cores=", Cores, # Number of cores to use
+      " -o /Volumes/Elements/BLAST/all_COI_trimmed.fasta ",
+      "/Volumes/Elements/BLAST/all_COI_trimmed_fwrd.fasta",
+      sep = ""
+      ),
+
+intern = FALSE
+)
+
+```
+
+###clustering
+cluster AVSs to 1% similarity
+
+```{bash}
+/Applications/vsearch/bin/vsearch --threads 4 --cluster_fast /Volumes/Elements/BLAST/all_COI_trimmed.fasta --centroids /Volumes/Elements/BLAST/all_COI_clust99.fasta --id 0.99 --uc /Volumes/Elements/BLAST/all_COI_clust99.txt
+```
+
+###LearnTaxa
+
+```{r}
+COI99 <- readDNAStringSet("/Volumes/Elements/BLAST/all_COI_clust99.fasta")
+#filter for sequence with right length (vast majority)
+COI99 <- COI99[width(COI99) == 418]
+
+#rename with names + taxonomy
+cluster_taxa <- seqnames[match(names(COI99), seqnames$seqname), ]$taxonomy
+
+#fix taxa names
+cluster_taxa <- pblapply(cluster_taxa, str_split, pattern = ";")
+cluster_taxa <- unlist(cluster_taxa, recursive = F)
+
+
+cluster_taxa <- 
+pblapply(cluster_taxa, function(x){
+  
+  #remove genus from species name
+  if(length(x) == 7){
+    
+    x[7] <- gsub(paste(x[6], " ", sep = ""), "", x[7], fixed = TRUE) 
+    x[7] <- gsub("\\s", "_", x[7])
+    
+  #add level if only 6 level
+    } else if(length(x) == 6){
+      
+      x[7] <- x[6]
+      x[6] <- x[5]
+      x[5] <- ""
+    }
+  
+  if(grepl("sp._", x[7])){ x[7] <- ""}
+  
+  x[x=="NA"] <- ""
+  
+   return(x)
+})
+
+
+cluster_taxa <- pblapply(cluster_taxa, paste0, collapse=";")
+cluster_taxa <- unlist(cluster_taxa)
+```
+
+rename seqs
+
+```{r}
+names(COI99) <- paste(names(COI99),"Root;", cluster_taxa, sep = ";")
+```
+
+
+```{r}
+taxid <- NULL
+
+#obtain the taxonomic assignments 
+groups <- names(COI99) # sequence names
+
+# assume the taxonomy begins with'Root;'
+groups <- gsub("(.*)(Root;)", "\\2", groups) # extract the group label
+groupCounts <- table(groups)
+u_groups <- names(groupCounts) # unique groups
+length(u_groups) # number of groups
+```
+pruning and training
+```{r}
+maxGroupSize <- 10 # max sequences per label (>= 1)
+
+remove <- logical(length(COI99))
+
+for (i in which(groupCounts > maxGroupSize)) {
+  
+  index <- which(groups==u_groups[i])
+  keep <- sample(length(index), maxGroupSize)
+  remove[index[-keep]] <- TRUE
+  
+  }
+
+sum(remove) # number of sequences eliminated
+```
+
+```{r}
+
+maxIterations <- 3 # must be >= 1
+
+allowGroupRemoval <- FALSE
+
+probSeqsPrev <- integer() # suspected problem sequences from prior iteration
+
+for (i in seq_len(maxIterations)) {
+  
+  cat("Training iteration: ", i, "\n", sep="")
+  
+  # train the classifier
+  trainingSet <- LearnTaxa(COI99[!remove],
+                           names(COI99)[!remove],
+                           taxid)
+  
+  # look for problem sequences
+  probSeqs <- trainingSet$problemSequences$Index
+  
+  if (length(probSeqs)==0) {
+    cat("No problem sequences remaining.\n")
+    break
+    
+    } else if (length(probSeqs)==length(probSeqsPrev) &&
+               all(probSeqsPrev==probSeqs)) {
+      
+      cat("Iterations converged.\n")
+      break
+      
+    }
+  
+  if (i==maxIterations)
+    break
+  
+  probSeqsPrev <- probSeqs
+  
+  # remove any problem sequences
+  index <- which(!remove)[probSeqs]
+  remove[index] <- TRUE # remove all problem sequences
+  
+  if (!allowGroupRemoval) {
+    
+    # replace any removed groups
+    missing <- !(u_groups %in% groups[!remove])
+    missing <- u_groups[missing]
+    if (length(missing) > 0) {
+      index <- index[groups[index] %in% missing]
+      remove[index] <- FALSE # don't remove
+    }}}
+
+ sum(remove) # total number of sequences eliminated
+ length(probSeqs) # number of remaining problem sequences
+ 
+ save(trainingSet, file = "/Volumes/Elements/BLAST/COI_all_trainingset_idtaxa.RData")
+```
+
+###classify sequences
+
+```{r}
+my_COI <- readDNAStringSet("~/Documents/01_Work/01_Research/15_eDNA/Data/COI_clustered_99.fasta")
+
+TaxID_COI <- IdTaxa(test = my_COI,
+                    trainingSet = trainingSet,
+                    type = "collapsed",
+                    threshold = 40,
+                    strand = "both",
+                    processors = 4)
+```
+
+```{r}
+TaxID_COI_list <- str_split(TaxID_COI, ";")
+lapply(TaxID_COI_list, length) %>% unlist() %>% table()
+
+```
+
+
+
+The all_COI_clust99.txt file tells us which sequences have been clustered
+
+column 09 gives the original sequence name
+column 10 gives the centroid sequence to which it has been clustered
+column 01 tells us if the sequence is itself a centroid sequence ("S") or clustered to a centroid ("H")
+column 04 gives the % identity with the centroid (here between 100% and 99%)
+
+```{r}
+
+Cluster_ID <- read_delim("/Volumes/Elements/BLAST/all_COI_clust99.txt", delim = "\t", col_names = FALSE)
+
+#filter only sequences that have been clusterd
+Cluster_ID <- 
+Cluster_ID %>% filter(X1 != "C") %>% 
+  dplyr::rename(seqname = X9, Type = X1, match = X10, pident = X4) %>% 
+  dplyr::select(seqname, Type, match, pident) %>% 
+  filter(Type == "H" ) %>% 
+  arrange(match)
+
+Cluster_ID <- 
+  Cluster_ID %>% 
+  group_by(match) %>% 
+  mutate(n = n())%>% 
+  left_join(seqnames)
+
+ranks <- c( "Phylum", "Class", "Order", "Family", "Subfamily", "Genus", "Species")
+
+Cluster_ID <- 
+  Cluster_ID %>%  
+  separate(taxonomy, ranks, sep = ";")
+
+Taxa_coherence <- 
+Cluster_ID %>% 
+  group_by(match) %>% 
+  summarise(n_phyla = length(unique(Genus))) 
+
+Taxa_coherence %>% 
+  pull(n_phyla) %>% 
+  table()
+  
+
+
+Cluster_ID[Cluster_ID$match %in% pull(filter(Phylum_coherence, n_phyla > 1), match),]
+
+```
+
+
++ make blast refdb
+
+```{bash}
+makeblastdb -in /Volumes/Elements/BLAST/all_COI.fasta -input_type 'fasta' -dbtype 'nucl'
+```
+
++ blastn against db
+
+```{bash}
+blastn -query ~/Documents/01_Work/01_Research/15_eDNA/Data/COI_clustered_99.fasta -db /Volumes/Elements/BLAST/all_COI.fasta -max_target_seqs 20 -out ~/Documents/01_Work/01_Research/15_eDNA/Data/COI_blast_embl.txt -outfmt '6 qseqid sseqid pident qstart qend  bitscore length  nident'  
+```
+
++ read in BLAST results
+```{r}
+COI_blast_EMBL <- read_tsv(here("Data", "COI_blast_embl.txt"), col_names = FALSE)
+
+colnames(COI_blast_EMBL) <- c("ASV","matchID", "pident","qstart", "qend","bitscore","length","nident")
+
+ranks <- c( "Phylum", "Class", "Order", "Family", "Subfamily", "Genus", "Species")
+
+COI_blast_EMBL <- 
+COI_blast_EMBL %>% 
+  separate(matchID, ranks, sep = ";")
+```
+
+
+```{r}
+COI_blast_EMBL_t1 <- 
+COI_blast_EMBL %>% 
+  group_by(ASV) %>% 
+  filter(pident == max(pident)) %>% 
+  dplyr::slice(1)
+
+COI_blast_EMBL_t1 %>% 
+  filter(pident > 90) %>% 
+  filter(Order == "Hymenoptera")
+
+majority_tax <- function(x) {
+  
+  if(sum(!is.na(x)) == 0) return(NA)
+  
+  freq <- table(x)
+  max_freq <- freq[freq == max(freq)]
+  
+  if(length(max_freq) > 1) return(NA)
+  if(max_freq < sum(freq)/2) return(NA)
+  return(names(max_freq))
+}
+
+Tax_table_95 <- 
+  COI_blast_EMBL %>%
+  dplyr::filter(pident > 90) %>% 
+  #replace "NA" with NA
+  mutate_at(vars(matches(ranks)), function(x) {
+    case_when(x == "NA" ~ NA_character_,
+              TRUE ~ x)
+  }) %>%  
+  group_by(ASV) %>% 
+  #filter best hits (highest pident + hits with < 2% lower pident)
+  filter(pident > max(pident -2)) %>% 
+  # at each taxonomic rank take the absolut majority rank (see majority_tax() )
+  mutate_at(vars(matches(ranks)), majority_tax) %>% 
+  select(1:8) %>% 
+  distinct()
+
+Tax_table_95 %>% pull(Phylum) %>% table
+  filter(grepl("Oomy", Class)) 
+
+COI_blast_EMBL %>% 
+  group_by(ASV) %>% 
+  dplyr::slice(1) %>% 
+  filter(pident <80) %>% filter(Phylum == "Arthropoda")
+
+COI_seqs <- readDNAStringSet("~/Documents/01_Work/01_Research/15_eDNA/Data/COI_clustered_99.fasta")
+
+COI_seqs[18] %>% as.character()
+
+COI_blast_EMBL_t1 %>% 
+  filter(pident > 95)
+```
+
+
+
+
