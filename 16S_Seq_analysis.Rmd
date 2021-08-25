@@ -765,7 +765,7 @@ Sintax_taxa_table_full <-
 export
 
 ```{r}
-write_tsv(Sintax_taxa_table_full, here("Data", "16S_99_Sintax_tax.txt"))
+  write_tsv(Sintax_taxa_table_full, here("Data", "16S_99_Sintax_tax.txt"))
 write_tsv(Sintax_taxa_table_prob, here("Data", "16S_99_Sintax_prob.txt"))
 ```
 
@@ -804,8 +804,9 @@ outlier tips
 Sintax_taxa_table_full <- read_tsv(here("Data", "16S_99_Sintax_tax.txt"))
 Sintax_taxa_table_prob <- read_tsv(here("Data", "16S_99_Sintax_prob.txt"))
 
-sintax_08 <- Sintax_taxa_table_full
-sintax_08[Sintax_taxa_table_prob < 0.8] <- NA
+sintax_06 <- Sintax_taxa_table_full %>% 
+  select(-kingdom)
+sintax_06[Sintax_taxa_table_prob < 0.6] <- NA
 
 distSum <- 
 as.matrix(distmsa) %>% 
@@ -814,9 +815,9 @@ as.matrix(distmsa) %>%
   tibble::rownames_to_column(var = "seq") %>% 
   arrange(desc(dist)) %>% 
   mutate(rank = 1:n()) %>% 
-  left_join(sintax_08) 
+  left_join(sintax_06) 
 
-ggplot(distSum, aes(x = dist, fill = Phylum))+
+ggplot(distSum, aes(x = dist, fill = phylum))+
   geom_histogram()
 ```
 
@@ -847,145 +848,14 @@ p1 <-
 p_TREE+
   #geom_tiplab(align =TRUE, linesize = 0)+
   geom_facet(panel = "class", data = Sintax_taxa_table_full, geom = geom_segment, 
-               mapping=aes(x = 1, xend = 3, yend = y, colour = Phylum, group = 1))+
-  scale_colour_brewer(palette = "Paired")+
+               mapping=aes(x = 1, xend = 3, yend = y, colour = phylum, group = 1))+
+  scale_colour_brewer(palette = "Set1")+
   geom_facet(panel = "probability", data = Sintax_taxa_table_prob,  geom = geom_tile,
                mapping=aes(x = 1, fill = Phylum))+
   scale_fill_viridis_c()+
-  theme(legend.position = "bottom")
+  theme(legend.position = "right")
 
-p1
+ggsave(here("Figures",  "16S_Tree_annotated.pdf"), p1,  width = 6, height = 6)
 
-p2 <- 
-  p_TREE+
-  geom_facet(panel = "log_abund", data = Tax_explore,  geom = geom_tile,
-               mapping=aes(x = 1, fill = log(abund, 2)))+
-  scale_fill_viridis_c()+
-  theme(legend.position = "bottom")
-
-p <- gridExtra::arrangeGrob(p1,p2, nrow = 1)
-
-ggsave(here("Figures",  "16S_Tree_annotated.pdf"), p,  width = 20, height = 10)
-
-plot(p)
+plot(p1)
 ```
-
-```{r}
-seqtab.nochim.ab <- seqtab.nochim_C
-seqtab.nochim.ab[seqtab.nochim.ab > 0] <-1 
-
-Tax_explore <- 
-colSums(seqtab.nochim.ab) %>% 
-  data.frame(preval = .) %>% 
-  tibble::rownames_to_column(var = "ASV") %>% 
-  left_join(Tax_explore) 
-
-p2 <- 
-  p_TREE+
-  #geom_tiplab(align =TRUE, linesize = 0)+
-  geom_facet(panel = "class", data = Tax_explore, geom = geom_tile, 
-               mapping=aes(x = 1, fill = as.factor(preval)))+
-  theme(legend.position = "bottom")+
-  scale_fill_viridis_d()
-```
-
-```{r}
-Tax_explore %>% filter(pident == "u95") %>% pull(phylum) %>% table
-```
-
-
-#BLAST
-
-Make blast DB from Anacapa 16S database
-
-```{bash}
-makeblastdb -in /Volumes/Elements/Data_ext/15/Data/16S_Anacapa.fasta -input_type 'fasta' -dbtype 'nucl'
-```
-
-
-
-```{bash}
-blastn -num_threads 4 -query /Volumes/Elements/Data_ext/15/Data/16S_centroids_99.fasta -db /Volumes/Elements/Data_ext/15/Data/16S_Anacapa.fasta -max_target_seqs 20 -out ~/Documents/01_Work/01_Research/15_eDNA_pilot/Data/Anacapa_blast_16S.txt -outfmt '6 qseqid sseqid pident qstart qend  bitscore length  nident'  
-```
-
-
-```{r}
-EMBL_blast_16s <- read_tsv("~/Documents/01_Work/01_Research/15_eDNA_pilot/Data/Anacapa_blast_16S.txt", 
-                           col_names = FALSE)
-
-tax_derep <- read_tsv(here("Data", "taxcode_16S.txt"))
-```
-
-
-```{r}
-
-Blast_names <- c("ASV", "matchID", "pident","qstart", "qend","bitscore","length","nident")
-
-colnames(EMBL_blast_16s) <- Blast_names
-
-ranks <- c( "id","Kingdom", "Phylum", "Class", "Order", "Family", "Subfamily", "Genus", "Species")
-
-Tax_table_16S <- 
-  EMBL_blast_16s %>%  
-  separate(matchID, ranks, sep = ";") %>% 
-  select(id, Blast_names[-2]) %>% 
-  left_join(tax_derep) %>% 
-  group_by(ASV) %>% 
-  dplyr::filter(bitscore == max(bitscore)) %>% 
-  dplyr::slice(1) %>% 
-  ungroup %>% 
-  mutate(ASV = gsub("(.+);.+", "\\1", ASV)) %>% 
-  arrange(ASV)
-
-```
-
-```{r}
-seq16S <- readDNAStringSet("~/Documents/01_Work/01_Research/15_eDNA/Data/16S_clustered_99.fasta")
-names(seq16S) <- gsub("(.+);size=\\d+", "\\1", names(seq16S))
-```
-
-what sequences have no match with BLAST
-
-```{r}
-Tax_explore <- 
-tibble(ASV = names(seq16S),
-  seqlen = width(seq16S)) %>% 
-  mutate(with_match = case_when(
-    ASV %in% Tax_table_16S$ASV ~ TRUE,
-    TRUE ~ FALSE
-  )) %>% 
-  left_join(Tax_table_16S) %>% 
-  mutate(pident = case_when(is.na(pident) ~ "NA",
-                            pident < 70 ~ "u70",
-                            pident < 80 ~ "u80",
-                            pident < 90 ~ "u90",
-                            pident < 95 ~ "u95",
-                            pident >= 95 ~ "ü95")) 
-
-
-ggplot(Tax_explore, aes(x = seqlen, fill = pident))+
-  geom_histogram()+
-  scale_fill_manual(values = c("grey", viridis(4)))+
-  facet_wrap(~pident)+
-  theme_minimal()
-
-ggsave(here("Figures", "Seq_len_16S_by_pident.pdf"), width = 6, height = 4)
-  
-```
-
-```{r}
-Tax_explore <- 
-colSums(seqtab.nochim_C) %>% 
-  data.frame(abund = .) %>% 
-  tibble::rownames_to_column(var = "ASV") %>% 
-  left_join(Tax_explore) 
-
-ggplot(Tax_explore, aes(y = abund, x = seqlen, colour = pident))+
-  geom_point(alpha = 0.8)+
-  scale_y_log10()+
-  theme_bw()+
-  scale_colour_manual(values = c("grey", viridis(4)))+
-  theme_minimal()
-
-```
-
