@@ -16,6 +16,10 @@ library(DESeq2)
 library(readxl)
 library(lubridate)
 library(eulerr)
+library(rgbif)
+library(ggh4x)
+library(forcats)
+library(vegan)
 ```
 
 
@@ -527,7 +531,8 @@ phylum_plot <-
   labs(x = "Phyla (all)\n ", y = "")+
   theme(
   strip.background = element_blank(),
-  strip.text.y = element_blank()
+  strip.text.y = element_blank(),
+  axis.text.y = element_text(size = 8)
 )
 
 class_plot <- 
@@ -544,7 +549,8 @@ class_plot <-
   theme(
   strip.background = element_blank(),
   strip.text.x = element_blank(),
-  strip.text.y = element_blank()
+  strip.text.y = element_blank(),
+  axis.text.y = element_text(size = 8)
 )
 
 order_plot <- 
@@ -561,15 +567,16 @@ order_plot <-
   theme(
   strip.background = element_blank(),
   strip.text.x = element_blank(),
-  strip.text.y = element_blank()
+  strip.text.y = element_blank(),
+  axis.text.y = element_text(size = 8)
 )
   
 ggarrange(
   phylum_plot, class_plot, order_plot, 
-  common.legend = TRUE, legend = "right", ncol = 1, heights = c(14/14, 6/14, 13/14)
+  common.legend = TRUE, legend = "bottom", ncol = 1, heights = c(14/14, 8/14, 13/14)
   )
 
-ggsave(here("Figures", "Taxa_distribution.jpg"), width = 6, height = 8)
+ggsave(here("Figures", "final", "Taxa_distribution.pdf"), width = 112, height = 160, units = "mm")
 ```
 
 
@@ -680,6 +687,7 @@ plot(v1,
      quantities = TRUE,
      main = "Moth survey - only Moths" )
 
+v1_max <- length(unique(c(M_COI, M_16S, M_lt)))
 ```
 
 ### euler Arthropods
@@ -717,6 +725,8 @@ plot(v2,
      labels = c("COI", "16S", "light trapping"),
      quantities = TRUE,
      main = "Moth survey - all Arthropods" )
+
+v2_max <- length(unique(c(A_COI, A_16S,A_lt)))
 
 ```
 
@@ -846,6 +856,7 @@ plot(v3,
      quantities = TRUE,
      main = "Pollinator transects - Bees & Butterflies" )
 
+v3_max <- length(unique(c(P_COI, P_16S, P_f2f)))
 ```
 
 ### euler Arthropods
@@ -884,6 +895,54 @@ plot(v4,
 
 dev.off()
 
+v4_max <- length(unique(c(A_16S, A_COI, P_f2f)))
+```
+
+### joined euler
+
+```{r}
+
+eulerP <- gridExtra::arrangeGrob(grobs = list(
+plot(v1, 
+     fills = alpha(c("#145DA0", "#7EA829", "#D11E00"),0.8),
+    # labels = list(labels = c("COI", "16S", "light"), cex = 0.8),
+    labels = FALSE,
+     quantities = TRUE,
+     edges = FALSE,
+     main = list(label = "A)    Moth site - only Moths",
+                 cex = 0.8, vjust = 1.5)),
+
+plot(v2, 
+     fills = alpha(c("#145DA0", "#7EA829", "#D11E00"),0.8),
+    # labels = list(labels = c("COI", "16S", "light"), cex = 0.8),
+    labels = FALSE,
+     quantities = TRUE,
+     edges = FALSE,
+     main = list(label = "B)    Moth site - all Arthropods",
+     cex = 0.8, vjust = 1.5)),
+
+plot(v3, 
+     fills = alpha(c("#145DA0", "#7EA829", "#D11E00"),0.8),
+    # labels = list(labels = c("COI", "16S", "transects"), cex = 0.8),
+    labels = FALSE,
+     quantities = TRUE,
+     edges = FALSE,
+     main = list(label = "C)    Pollinator site - Bees & Butterflies" ,
+     cex = 0.8, vjust = 1.5)),
+
+plot(v4, 
+     fills = alpha(c("#145DA0", "#7EA829", "#D11E00"),0.8),
+    # labels = list(labels = c("COI", "16S", "transects"), cex = 0.8),
+    labels = FALSE,
+     quantities = TRUE,
+     edges = FALSE,
+     main = list(label = "D)    Pollinator site - all Arthropods",
+     cex = 0.8, vjust = 1.5))
+),
+ncol = 1)
+
+ggsave(filename = here("Figures", "final", "Euler_combined.pdf"),
+       plot = eulerP, width = 80, units = "mm")
 ```
 
 
@@ -1143,9 +1202,9 @@ ggplot(Bubble_data_other, aes(x = species, y = method, fill = method, size = abu
   guides(size = guide_legend(nrow = 1))+
   theme_bw() +
   theme(
-   strip.text.y.left = element_text(angle = 0, size = 8),
+   strip.text.y.left = element_text(angle = 0, size = 6),
    strip.placement = "outside",
-   axis.text = element_text(size = 8),
+   axis.text = element_text(size = 6),
    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
    axis.text.y = element_text(face = "italic"),
    legend.position = "bottom", 
@@ -1165,9 +1224,9 @@ ggplot(Bubble_data_LepHym, aes(x = species, y = method, fill = method, size = ab
   guides(size = guide_legend(nrow = 1))+
   theme_bw() +
   theme(
-   strip.text.y.left = element_text(angle = 0, size = 8),
+   strip.text.y.left = element_text(angle = 0, size = 6),
    strip.placement = "outside",
-   axis.text = element_text(size = 8),
+   axis.text = element_text(size = 6),
    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
    axis.text.y = element_text(face = "italic"),
    legend.position = "bottom", 
@@ -1175,9 +1234,9 @@ ggplot(Bubble_data_LepHym, aes(x = species, y = method, fill = method, size = ab
    ggh4x.facet.nestline = element_line(colour = "blue")
     )
 
-ggsave(here("Figures", "Bubble_combined_Lep_Hym.pdf"), height = 35, width = 18, units = "cm", plot = LepHym)
+ggsave(here("Figures", "final", "Bubble_combined_Lep_Hym.pdf"), height = 237, width = 169, units = "mm", plot = LepHym)
 
-ggsave(here("Figures", "Bubble_combined_other.pdf"), height = 35, width = 18, units = "cm", plot = Other)
+ggsave(here("Figures", "final", "Bubble_combined_other.pdf"), height = 237, width = 169, units = "mm", plot = Other)
 
 
 
@@ -1271,11 +1330,14 @@ ggplot( aes(x = Volume, y= richness, fill = Station))+
                label_wrap_gen(multi_line=FALSE))+
   theme_minimal()+
   scale_fill_brewer(palette = "Set1")+
-  theme(panel.grid.major = element_blank())+
+  theme(panel.grid.major = element_blank(),
+        legend.position = "bottom",
+        legend. title = element_blank())+
   labs(y = "sequence richness", x = bquote('cumulative volume of air'~(m^3)),
-       title = "species accumulation curves")
+       title = "species accumulation curves")+
+  guides(fill=guide_legend(nrow=2,byrow=TRUE))
 
-ggsave(here("Figures", "Specaccum.pdf"), width = 6, height = 4)
+ggsave(here("Figures", "final", "Specaccum.pdf"), width = 80, height = 100, units = "mm")
 
 ggsave(here("Figures", "Specaccum.jpeg"), width = 6, height = 4)
   
@@ -1283,11 +1345,6 @@ ggsave(here("Figures", "Specaccum.jpeg"), width = 6, height = 4)
 
 ## by habitat
 ```{r}
-sampleInfo <- 
-  sampleInfo %>% 
-  left_join(site_codes) %>% 
-  left_join(F2F_meta)
-
 sampleInfo_stat <- 
   sampleInfo %>% 
   filter(grepl("^S", ID), perl = TRUE) %>% 
@@ -1421,19 +1478,23 @@ hull <- points_coi %>%
   group_by(Station) %>%
   dplyr::slice(chull(MDS1, MDS2))
 
-ggplot(points_coi, aes(x = MDS1, y =MDS2, colour = Station, 
-                   fill = Station))+
+points_coi %>% 
+  ggplot(aes(x = MDS1, y =MDS2, colour = Site_name, 
+                   fill = Site_name, group = ClusterName))+
   geom_point(size = 2)+
-  #geom_text(aes(label = sample), nudge_x= 0.02, size = 2)+
+  annotate(geom = "text", x = -0.4, y = 0.3, label = paste("stress = ", round(NMDS_coi$stress, 2), sep = ""), colour = "black")+
   theme_bw()+
-  ggtitle("Species composition - bray curtis\nCOI all sequences")+
+  theme(legend.position = "bottom",
+        legend.title = element_blank())+
+  ggtitle("COI - all sequences")+
   scale_colour_brewer(palette = "Set1", name = "Station")+
   scale_fill_brewer(palette = "Set1", name = "Station")+
   scale_shape_manual(values = c(16,24))+
   geom_polygon(data = hull, alpha = 0.3)+
-  scale_alpha_manual(values = c(0.4, 0))
+  scale_alpha_manual(values = c(0.4, 0))+
+  guides(colour=guide_legend(nrow=2,byrow=TRUE))
 
-ggsave(here("Figures", "NMDS_COI.jpg"), width = 4, height = 3)
+ggsave(here("Figures", "final", "NMDS_COI.pdf"), width = 80, height = 100, units = "mm")
 
 ```
 
@@ -1446,9 +1507,6 @@ adonis2(dist_coi ~ Station, data = filter(sampleInfo, Sample %in% rownames(VST_c
 VST_PS <- VST_coi[rownames(VST_coi) %in% sampleInfo[grepl("S", sampleInfo$Station), ]$Sample,]
 
 VST_PS <- VST_PS[, colSums(VST_PS) > 0]
-
-sampleInfo <- 
-sampleInfo %>% left_join(site_codes) %>% left_join(F2F_meta)
 
 adonis2(VST_PS ~ Station + habitat, data = filter(sampleInfo, Sample %in% rownames(VST_PS)), dist = "bray")
 
