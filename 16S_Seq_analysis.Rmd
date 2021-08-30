@@ -855,7 +855,7 @@ p_TREE+
   scale_fill_viridis_c()+
   theme(legend.position = "right")
 
-ggsave(here("Figures",  "16S_Tree_annotated.pdf"), p1,  width = 6, height = 6)
+ggsave(here("Figures", "final", "16S_Tree_annotated.pdf"), p1,  width = 169, height = 100, units = "mm")
 
 plot(p1)
 ```
