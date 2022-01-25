@@ -16,3 +16,4 @@ alfie_out/*
 *.txt
 Scripts_other/*
 .DS_Store
+Data_ext/*
