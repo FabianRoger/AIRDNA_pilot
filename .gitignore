@@ -1,0 +1,17 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.rds
+*.fasta
+*.RData
+*.html
+*.docx
+Data/*
+Docs/*
+Figures/*
+Natalies\ Thesis/*
+alfie_out/*
+*.csv
+*.txt
+Scripts_other/*
