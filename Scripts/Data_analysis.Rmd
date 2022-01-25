@@ -1,0 +1,2161 @@
+---
+title: "Data_analysis_final"
+output: html_notebook
+---
+
+## check Fulmekiola species --> wrongly assigned
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(here)
+library(ggrepel)
+library(ggpubr)
+library(phyloseq)
+library(DESeq2)
+library(readxl)
+library(lubridate)
+library(eulerr)
+library(rgbif)
+library(ggh4x)
+library(forcats)
+library(vegan)
+library(DECIPHER)
+library(MetBrewer)
+```
+
+
+# download data from Figshare
+
+all necessary datafiles to run this script are deposited on Figshare and can be downloaded here: https://doi.org/10.6084/m9.figshare.16437855
+
+
+#import data
+
+```{r}
+# ASV tables clustered at 99% ID
+ASV_COI <- read.table(url("https://figshare.com/ndownloader/files/30448416"))
+ASV_16S <- read.table(url("https://figshare.com/ndownloader/files/30448425"))
+
+# taxonomic assignment with SINTAX, and probability tables
+tax_COI <- read_tsv(url("https://figshare.com/ndownloader/files/30448413"))
+prob_COI <- read_tsv(url("https://figshare.com/ndownloader/files/30448410"))
+colnames(prob_COI) <- tolower(colnames(prob_COI))
+
+tax_16S <- read_tsv(url("https://figshare.com/ndownloader/files/30448422"))
+prob_16S <- read_tsv(url("https://figshare.com/ndownloader/files/30448419"))
+colnames(prob_16S) <- tolower(colnames(prob_16S))
+
+#sequence files (99% clustered ASVs)
+tmpFastaCoi <- tempfile("file1", fileext = ".fasta")
+download.file(url = "https://figshare.com/ndownloader/files/30448476", tmpFastaCoi)
+seq_COI <- readDNAStringSet(tmpFastaCoi)
+
+tmpFasta16S <- tempfile("file1", fileext = ".fasta")
+download.file(url = "https://figshare.com/ndownloader/files/30448443", tmpFasta16S)
+seq_16S <- readDNAStringSet(tmpFasta16S)
+
+#taxonomic assignment with boldigger for COI 
+tax_COI_bd <- read_tsv(here("Data", "boldiger", "COI_boldiger_tax.txt"))
+
+# sample meta-data
+sampleInfo <- read_tsv(url("https://figshare.com/ndownloader/files/30448434")) 
+
+#Transect-walk Data
+Insects <- read_tsv(url("https://figshare.com/ndownloader/files/30448431"))
+
+#Moth trapping data
+Moths <- read_tsv(url("https://figshare.com/ndownloader/files/30448509"))
+```
+
+
+
+# clean taxonomy
+
+We remove all taxonomic assignment with a bootstrap probability of below 60%
+
+```{r}
+tax_COI_60 <- tax_COI
+tax_COI_60[prob_COI < 0.6] <- NA_character_ 
+
+tax_16S_60 <- tax_16S
+tax_16S_60[,-2][prob_16S < 0.6] <- NA_character_
+```
+
+
+# remove unassigned sequences
+
+```{r}
+
+## COI
+unassigned_coi <- 
+  filter(tax_COI_60, is.na(phylum)) %>% 
+  pull(seq)
+
+#proportion of sequences
+round((length(unassigned_coi) / nrow(tax_COI_60))*100, 1)
+
+#proportion of reads
+round((sum(ASV_COI[,unassigned_coi]) / sum(ASV_COI))*100, 1)
+
+##16S
+unassigned_16S <- 
+  filter(tax_16S_60, is.na(phylum)) %>% 
+  pull(seq)
+
+#proportion of sequences
+round((length(unassigned_16S) / nrow(tax_16S_60))*100, 1)
+
+#proportion of reads
+round((sum(ASV_16S[,unassigned_16S]) / sum(ASV_16S))*100, 1)
+
+
+  
+```
+
+We remove all sequences that have no taxonomic assignment at Phylum level with a (non-conservative) confidence value of at least 60%
+
+COI:
+This removes 39.3 % of the sequences accounting for 14.3% of all reads.
+
+16S:
+This removes 66.8 % of the sequences accounting for 9.5% of all reads.
+
+1) check for sequences in the negative control
+
+```{r}
+
+## COI
+
+# sequences in blank sample & assignment
+blank_coi <- 
+ASV_COI[filter(sampleInfo, ID == "CLEAN2" & Barcode == "COI") %>% pull(Sample),] %>% 
+  pivot_longer(everything()) %>% 
+  filter(value > 0) %>% 
+  dplyr::rename(seq = name) %>% 
+  left_join(tax_COI_60) %>% 
+  arrange(desc(value))
+
+blank_coi
+
+#look at sequence prevalence 
+select(ASV_COI, pull(blank_coi, seq)) %>% 
+  tibble::rownames_to_column("Sample") %>% 
+  pivot_longer(starts_with("seq")) %>% 
+  mutate(value = value > 0) %>% 
+  group_by(name) %>% 
+  summarise(value = sum(value))
+
+
+## 16S
+
+# sequences in blank sample & assignment
+blank_16S <- 
+  ASV_16S[filter(sampleInfo, ID == "CLEAN2" & Barcode == "16S") %>% pull(Sample),] %>% 
+  pivot_longer(everything()) %>% 
+  filter(value > 0) %>% 
+  dplyr::rename(seq = name) %>% 
+  left_join(tax_16S_60) %>% 
+  arrange(desc(value))
+
+blank_16S
+
+
+#prevalence
+select(ASV_16S, pull(blank_16S, seq)) %>% 
+  tibble::rownames_to_column("Sample") %>% 
+  pivot_longer(starts_with("seq")) %>% 
+  mutate(value = value > 0) %>% 
+  group_by(name) %>% 
+  summarise(value = sum(value))
+```
+
+COI: 
+the blank sample contains 11 sequences for COI. Only 4 have a taxonomic assignments at Kingdom level. 2 have a certain species level assignment:  *Caradina Sp.* and *Corbicula fluminea*. We have confirmed *Caradina sp.* as lab contamination (100 % match, extraction on that species were performed during the same time in the lab as our samples). The sequences was present in all samples. *Corbicula fluminea* was only present in the blank but we cannot confirm the origin of this sequence. 
+
+seq_0010, which is identified as a Coleoptera here, is in fact a human sequence. The Sequence is miss-assigned in the Sintax reference database (checked manually)
+
+16S: 
+the blank sample contains 9 sequences for 16S. Only one has a taxonomic assignment that is trustworthy, *Sus scrofa*, which is the wild boar / domestic pig and could be a contamination from the sterile sampling location as it only occurs in that sample. Seq_0009 is very likely the same Caradina contamination as it also occurs in (almost) all samples
+
+All sequences present in the negative control are removed from all samples
+
+
+2) check for Human sequences
+--> would show up as primate in the 16S refDB as there are no human seqs in the reference database but also no relatives that are likely to show up in the samples
+--> For 16S one sequence in the reference database, "Thrips flavidulus" is a human contaminant. Therefore many human sequences got assigned to this species.  We remove all instance of this Species. 
+
+
+```{r}
+
+# seq_0010 is also a Human conatmination (assigned as Prostephanus truncatus in the Midori database)
+humans_coi <- 
+tax_COI_60 %>% 
+  filter(order == "Primates" | seq == "seq_0010") %>% 
+  pull(seq)
+
+humans_16S <- 
+  tax_16S_60 %>% 
+  filter(order == "Primates" | genus == "Thrips") %>% 
+  pull(seq)
+```
+
+for COI we exclude 2 sequences
+
+for 16S we exclude 24 sequences 
+
+3) exclude potential contaminations
+
+The following species are present in the data although they are very unlikely to have been present in the environment (do not occur in Sweden). However they have been handled in lab before and are likely to be contaminations. 
+
+Clytie illunaris
+Mycalesis anynana
+Austrazenia pura 
+Caradina sp. (already removed as it was present in the blank)
+
+```{r}
+
+contam_coi <- 
+tax_COI_60 %>% 
+  filter(species %in% c("Clytie illunaris",
+                        "Mycalesis anynana",
+                        "Austrazenia pura")) %>% 
+  pull(seq)
+
+#not present in 16S (or not identified to species level in 16S)
+```
+
+4) the most abundant Arthropod in both COI and 16S is a fly (Metopina pileata) and it's reads are concentrated in two samples (SI1 & SI3)
+
+In those samples a small fly got caught in the tube (sucked in despite the net). The fly was removed but it dominated all the reads. We exclude it. 
+
+```{r}
+ASV_16S[, c("seq_0002", "seq_0645")] %>% 
+  arrange(desc(seq_0002)) %>% 
+  dplyr::slice(1:2) %>% 
+  tibble::rownames_to_column("Sample") %>% 
+  left_join(sampleInfo)
+
+ASV_COI[, "seq_0001", drop = FALSE] %>% 
+  arrange(desc(seq_0001)) %>% 
+  dplyr::slice(1:2) %>% 
+  tibble::rownames_to_column("Sample") %>% 
+  left_join(sampleInfo)
+
+fly_COI <- "seq_0001"
+fly_16S <- c("seq_0002", "seq_0645")
+```
+
+
+#exclude sequences
+
+```{r}
+remove_COI <- unique(c(unassigned_coi, humans_coi, blank_coi$seq, contam_coi, fly_COI))
+remove_16S <- unique(c(unassigned_16S, humans_16S, blank_16S$seq, fly_16S))
+
+#COI
+#proportion of sequences
+round((length(remove_COI) / nrow(tax_COI_60))*100, 1)
+#proportion of reads
+round((sum(ASV_COI[,remove_COI]) / sum(ASV_COI))*100, 1)
+
+#16S
+#proportion of sequences
+round((length(remove_16S) / nrow(tax_16S_60))*100, 1)
+#proportion of reads
+round((sum(ASV_16S[,remove_16S]) / sum(ASV_16S))*100, 1)
+
+tax_COI_clean <- filter(tax_COI_60, !seq %in% remove_COI) 
+tax_16S_clean <- filter(tax_16S_60, !seq %in% remove_16S) 
+
+ASV_COI <- select(ASV_COI, -c(which(colnames(ASV_COI) %in% remove_COI))) 
+ASV_16S <- select(ASV_16S, -c(which(colnames(ASV_16S) %in% remove_16S))) 
+```
+
+COI:
+In total this quality filtering removes 39.7% of the sequences, accounting for 23.6 % of the reads. 
+
+16S:
+In total this quality filtering removes 78.8% of the sequences, accounting for 92.3 % of the reads. 
+
+#check species
+
+for those species that are identified as Arthropods or Vertebrates, we double check the entries via blast
+
+## COI
+```{r}
+Arth_seq_coi <- 
+tax_COI_clean %>% 
+  filter(kingdom == "Animalia") %>% 
+  filter(!is.na(genus)) %>% 
+  pull(seq)
+
+seq_COI[Arth_seq_coi] %>% 
+  writeXStringSet(here("Data", "COI_99_Animalia.fasta"))
+```
+
+--> megablast the exported fasta file against the ncbi nt database (https://blast.ncbi.nlm.nih.gov/Blast.cgi)
+--> download hits as CSV table and save as 
+
+```{r}
+COI_ncbi <- read_csv(here("Data", "NCBI_Animalia_coi.csv"), col_names = FALSE)
+
+colnames(COI_ncbi) <- c("query","subject","prct_identity","alignment_length","mismatches","gap_opens","q_start","q_end","s_start","s_end","evalue","bit_score")
+```
+
+
+1) filter hits for best hit
+
+```{r}
+COI_ncbi_u <- 
+  COI_ncbi %>% 
+  select(query, subject, prct_identity, alignment_length, bit_score) %>% 
+  distinct() %>% 
+  group_by(query) %>% 
+  filter(bit_score > 0.9*max(bit_score))
+  
+```
+
+add taxonomy from accession number 
+
+(works if there are not too many accession numbers to check. Otherwise the taxonomizr package provides an offline solution but requires the download of the database)
+
+```{r}
+
+id_to_taxa <- COI_ncbi_u %>% 
+  filter(!is.na(subject)) %>% 
+  pull(subject) %>% 
+  unique() %>% 
+  tibble(subject = .)
+
+options(ENTREZ_KEY = "4c1de0b0fe003a788cb9574b4db9fbcc8109")
+
+ncbi_ids <- genbank2uid(id_to_taxa$subject)
+
+ncbi_ids <- lapply(ncbi_ids, function(x) {x[[1]][1]})
+ncbi_ids <- unlist(ncbi_ids)
+
+id_to_taxa$ncbi_id <- ncbi_ids
+
+taxa_names <- id2name(id = unique(ncbi_ids), db = "ncbi")
+taxa_names_df <- bind_rows(taxa_names[1:length(taxa_names)])
+
+COI_ncbi_u <- 
+  COI_ncbi_u %>% 
+  left_join(id_to_taxa) %>% 
+  left_join(dplyr::rename(taxa_names_df, ncbi_id = id))
+
+#write_tsv(COI_ncbi_u, here("Data", "NCBI_animalia.txt"))
+COI_ncbi_u <- read_tsv(here("Data", "NCBI_animalia.txt"))
+```
+
+filter taxa hits
+
+I filter taxa hits by bitscore and check sequences with multiple best hits manually. I also check sequences with best hits below 98%
+
+multiple best hits
+
+```{r}
+COI_ncbi_u <- 
+COI_ncbi_u %>% 
+  group_by(query) %>% 
+  filter(bit_score == max(bit_score)) %>% 
+  select(query, prct_identity, bit_score, alignment_length, name) %>% 
+  distinct() 
+
+COI_ncbi_u %>% 
+  filter(n() > 1) %>% 
+  pull(query) %>% unique()
+```
+
+```{r}
+
+COI_ncbi_u[COI_ncbi_u$query == "seq_0114",]$name <- "Canis lupus" #dogs and wulfs cannot be told appart
+COI_ncbi_u[COI_ncbi_u$query == "seq_0657",]$name <- "Liposcelis sp." #multiple perfect matches
+COI_ncbi_u[COI_ncbi_u$query == "seq_0687",]$name <- "Philoscia muscorum"#the BOLD entry was not id to species 
+COI_ncbi_u[COI_ncbi_u$query == "seq_0803",]$name <- "Cynomya sp." #multiple perfect matches
+COI_ncbi_u[COI_ncbi_u$query == "seq_0859",]$name <- "Columba palumbus" #one match to subspecies
+COI_ncbi_u[COI_ncbi_u$query == "seq_0952",]$name <- "Harmonia axyridis" #checked manually, Eurydema gebleri is likley a wrong assignemnt           
+COI_ncbi_u[COI_ncbi_u$query == "seq_1213",]$name <- "Oryctolagus cuniculus"
+COI_ncbi_u[COI_ncbi_u$query == "seq_1294",]$name <- "Smittia stercoraria"
+COI_ncbi_u[COI_ncbi_u$query == "seq_1374",]$name <- "Lycoriella sp." #multiple perfect matches + majority rule
+COI_ncbi_u[COI_ncbi_u$query == "seq_1716",]$name <- "Pelophylax lessonae"#the BOLD entry was not id to species 
+COI_ncbi_u[COI_ncbi_u$query == "seq_1767",]$name <- "Sphaerophoria sp." #multiple perfect matches
+COI_ncbi_u[COI_ncbi_u$query == "seq_1952",]$name <- "Diplonevra nitidula" #the BOLD entry was not id to species 
+COI_ncbi_u[COI_ncbi_u$query == "seq_2153",]$name <- "Drosophila immigrans" #the BOLD entry was not id to species 
+COI_ncbi_u[COI_ncbi_u$query == "seq_2280",]$name <- "Leiobunum rotundum" #the BOLD entry was not id to species 
+COI_ncbi_u[COI_ncbi_u$query == "seq_2803",]$name <- "Forficula auricularia" #the BOLD entry was not id to species
+COI_ncbi_u[COI_ncbi_u$query == "seq_2969",]$name <- "Nysius sp."  #multiple perfect matches
+COI_ncbi_u[COI_ncbi_u$query == "seq_2993",]$name <- "Amischa analis" #the BOLD entry was not id to species
+COI_ncbi_u[COI_ncbi_u$query == "seq_3122",]$name <- "Arion sp." #multiple perfect matches
+COI_ncbi_u[COI_ncbi_u$query == "seq_3332",]$name #probably Wolbachia (bacterial endosymbiont)
+COI_ncbi_u[COI_ncbi_u$query == "seq_3745",]$name <- "Aphis sp." #multiple perfect matches
+COI_ncbi_u[COI_ncbi_u$query == "seq_3869",]$name <- "Lucilia sp." #multiple perfect matches
+```
+
+seq_3332 is likely Wolbachia and not an Insect
+
+best hits of low quality
+
+```{r}
+COI_ncbi_u %>% 
+  group_by(query) %>% 
+  dplyr::slice(1) %>%
+  ungroup %>% 
+  filter(prct_identity < 97)
+```
+
+seq_0148 has only a partial hit. 
+seq_3939 has only a 90% id hit to a know contaminant. It might be a chimeric sequence
+seq_2470 has as best hit a filamentous bacteria
+
+make unique species table
+```{r}
+COI_ncbi_u <- 
+  COI_ncbi_u %>% 
+  select(query, name) %>% 
+  filter(!query %in% c("seq_3332", "seq_0148", "seq_3939", "seq_2470")) %>% 
+  distinct()
+```
+
+
+harmonizing taxonomy and adding higher taxonomic levels with gbif backbone
+```{r}
+
+
+COI_ncbi_gbif <- 
+map(1:nrow(COI_ncbi_u), function(x) {
+  name_backbone(name = COI_ncbi_u$name[x], 
+                rank = "species")
+}) %>% bind_rows()
+
+COI_ncbi_u_tax <-  
+  COI_ncbi_gbif %>% 
+  select(kingdom, phylum, class, order, family, genus, species) %>% 
+  mutate(seq = COI_ncbi_u$query) %>% 
+  relocate(seq) 
+  
+write_tsv(COI_ncbi_u_tax, here("Data", "COI_ncbi.txt"))
+
+COI_ncbi_u_tax <- read_tsv(here("Data", "COI_ncbi.txt"))
+```
+compare to Sintax
+
+```{r}
+tax_COI_clean %>% 
+  filter(seq %in% Arth_seq_coi) %>% 
+  select(seq, phylum, genus, species) %>% 
+  left_join(select(COI_ncbi_u_tax, seq, phylum, genus, species), by = "seq") %>% 
+  filter(is.na(species.x) != is.na(species.y)) 
+```
+
+The assignemnt over ncbi Blast yields no conflicting assignments, neither at genus nor at species level. However, there are some assignment that are missing a species level assigments in one of the two dataframes. We find a consensus manually. 
+
+seq_3332
+is Wolbachia
+
+seq_0148, seq_3939, seq_2470:
+we exclude them (see above)
+
+seq_0627, seq_2831, seq_3869
+we keep the species level assigment for these from the SINTAX assignment as these are missing from NCBI because the species name wasn't recognized by GBIF but we verified manually that the species is plausible
+
+seq_0657, seq_0803, seq_1374, seq_1767, seq_2969, seq_3122, seq_3745, seq_3869
+These sequences have multiple perfect matches on NCBI. We keep the Genus level . 
+
+seq_1294, seq_1507, seq_2625, seq_2993, seq_3050, seq_3342, seq_3690
+These sequences hav species level assignment with NCBI but not with Sintax. We keep only the Genus level. 
+
+## consensus taxonomy
+```{r}
+seq_to_genus <- c("seq_0657","seq_0803","seq_1374","seq_1767","seq_2969",
+  "seq_3122","seq_3745","seq_3869","seq_1294","seq_1507",
+  "seq_2625","seq_2993","seq_3050","seq_3342","seq_3690")
+
+seq_excl <- c("seq_3332", "seq_0148", "seq_3939", "seq_2470")
+
+#set species to NA
+tax_COI_clean <- 
+  tax_COI_clean %>% 
+  mutate(species = case_when(seq %in% seq_to_genus ~ NA_character_,
+                             TRUE ~ species))
+
+#exclude seqs
+tax_COI_clean <-
+  tax_COI_clean %>% 
+  filter(!seq %in% seq_excl)
+```
+
+
+#16S
+```{r}
+Animal_seq_16S <- 
+tax_16S_clean %>% 
+  filter(kingdom == "Animalia") %>% 
+  filter(!is.na(genus)) %>% 
+  pull(seq)
+
+seq_16S[Animal_seq_16S] %>% 
+  writeXStringSet(here("Data", "16S_99_Animalia.fasta"))
+```
+
+--> megablast the exported fasta file against the ncbi nt database (https://blast.ncbi.nlm.nih.gov/Blast.cgi)
+--> download hits as CSV table and save as NCBI_Animalia_16S.csv
+
+```{r}
+ncbi_16S <- read_csv(here("Data", "NCBI_Animalia_16S.csv"), col_names = FALSE)
+
+colnames(ncbi_16S) <- c("query","subject","prct_identity","alignment_length","mismatches","gap_opens","q_start","q_end","s_start","s_end","evalue","bit_score")
+```
+
+
+1) filter hits for best hits
+
+```{r}
+ncbi_16S_u <- 
+  ncbi_16S %>% 
+  select(query, subject, prct_identity, alignment_length, bit_score) %>% 
+  distinct() %>% 
+  group_by(query) %>% 
+  filter(bit_score > 0.9*max(bit_score))
+  
+```
+
+add taxonomy from accession number 
+
+(works if there are not too many accession numbers to check. Otherwise the taxonomizr package provides an offline solution but requires the download of the database)
+
+```{r}
+
+id_to_taxa <- ncbi_16S_u %>% 
+  filter(!is.na(subject)) %>% 
+  pull(subject) %>% 
+  unique() %>% 
+  tibble(subject = .)
+
+options(ENTREZ_KEY = "4c1de0b0fe003a788cb9574b4db9fbcc8109")
+
+ncbi_ids <- genbank2uid(id_to_taxa$subject)
+
+ncbi_ids <- lapply(ncbi_ids, function(x) {x[[1]][1]})
+ncbi_ids <- unlist(ncbi_ids)
+
+id_to_taxa$ncbi_id <- ncbi_ids
+
+taxa_names <- id2name(id = unique(ncbi_ids), db = "ncbi")
+taxa_names_df <- bind_rows(taxa_names[1:length(taxa_names)])
+
+ncbi_16S_u <- 
+  ncbi_16S_u %>% 
+  left_join(id_to_taxa) %>% 
+  left_join(dplyr::rename(taxa_names_df, ncbi_id = id))
+
+write_tsv(ncbi_16S_u, here("Data", "NCBI_animalia_16S.txt"))
+ncbi_16S_u <- read_tsv(here("Data", "NCBI_animalia_16S.txt"))
+```
+
+filter taxa hits
+
+I filter taxa hits by bitscore and check sequences with multiple best hits manually. 
+
+multiple best hits
+
+```{r}
+ncbi_16S_u <- 
+ncbi_16S_u %>% 
+  group_by(query) %>% 
+  filter(bit_score == max(bit_score)) %>% 
+  select(query, prct_identity, bit_score, alignment_length, name) %>% 
+  distinct() 
+
+ncbi_16S_u %>% 
+  filter(n() > 1) %>% 
+  pull(query) %>% unique()
+```
+
+```{r}
+ncbi_16S_u[ncbi_16S_u$query == "seq_0022",]$name <- "Cartodere nodifer" #interspecific diversity
+ncbi_16S_u[ncbi_16S_u$query == "seq_0148",]$name <- "Apis mellifera" #multiple subspecies
+ncbi_16S_u[ncbi_16S_u$query == "seq_0283",]$name <- "Bombus terrestris" #multiple subspecies
+ncbi_16S_u[ncbi_16S_u$query == "seq_0357",]$name <- "Coccinella septempunctata" #multiple subspecies
+ncbi_16S_u[ncbi_16S_u$query == "seq_0465",]$name <- "Lucilia sp."  #multiple perfect matches
+ncbi_16S_u[ncbi_16S_u$query == "seq_1059",]$name <- "Apis mellifera" #multiple subspecies      
+ncbi_16S_u[ncbi_16S_u$query == "seq_1092",]$name <- "Populicerus sp." #multiple matches
+ncbi_16S_u[ncbi_16S_u$query == "seq_1121",]$name #exclude as best match is 80% and short alignment
+ncbi_16S_u[ncbi_16S_u$query == "seq_1142",]$name #exclude as best match is 82% and short alignment
+ncbi_16S_u[ncbi_16S_u$query == "seq_1247",]$name <- "Nicrophorus sp." #multiple matches
+ncbi_16S_u[ncbi_16S_u$query == "seq_1514",]$name #exclude as best match is 91%
+
+```
+check bad hits
+```{r}
+ncbi_16S_u %>% 
+  group_by(query) %>% 
+  dplyr::slice(1) %>%
+  ungroup %>% 
+  filter(prct_identity < 96)
+```
+
+make unique species table
+```{r}
+ncbi_16S_u <- 
+  ncbi_16S_u %>% 
+  select(query, name) %>% 
+  filter(!query %in% c("seq_1121", "seq_1142")) %>% 
+  distinct()
+```
+
+
+harmonizing taxonomy and adding higher taxonomic levels with gbif backbone
+```{r}
+ncbi_16S_gbif <- 
+map(1:nrow(ncbi_16S_u), function(x) {
+  name_backbone(name = ncbi_16S_u$name[x], 
+                rank = "species")
+}) %>% bind_rows()
+
+ncbi_16S_u_tax <-  
+  ncbi_16S_gbif %>% 
+  select(kingdom, phylum, class, order, family, genus, species) %>% 
+  mutate(seq = ncbi_16S_u$query) %>% 
+  relocate(seq) 
+  
+write_tsv(ncbi_16S_u_tax, here("Data", "16S_ncbi.txt"))
+
+ncbi_16S_u_tax <- read_tsv(here("Data", "16S_ncbi.txt"))
+```
+
+compare to Sintax
+
+```{r}
+
+
+tax_16S_clean %>% 
+  filter(seq %in% Animal_seq_16S) %>% 
+  select(seq, genus, species) %>% 
+  left_join(select(ncbi_16S_u_tax, seq, genus, species), by = "seq") %>% 
+  filter(species.x != species.y | is.na(species.x) != is.na(species.y)) %>% 
+  left_join(ncbi_16S, by = c("seq" = "query")) %>% 
+  group_by(seq) %>% 
+  filter(bit_score == max(bit_score)) %>% 
+  dplyr::relocate(prct_identity, .after = species.y) 
+
+  
+```
+seq_0833 & seq_0902 have 100% matches in ncbi but diverging matches with sintax. I checked and the ncbi matches are missing from the sintax database. We keep the NCBI matches. 
+
+seq_0058 has a best match at 98% and multiple matches to different genera with similar identities. I keep the Family level assignment
+
+seq_0477 has a best match at 94%, I keep only the Genus
+
+"seq_0008" "seq_0791" "seq_0803" "seq_0834" "seq_1382" "seq_1711" have very low identities (best match ~90%) I exclude them 
+
+seq_0034 matches at genus level, I keep the genus level
+
+seq_0037 seq_0544 seq_1589 have only matches to "Armadillidium vulgare" in ncbi but the genus "Armadillidium" is missing from the sintax database. We keep the species id Armadillidium vulgare
+
+seq_1092 has multiple matches I keep the genus level 
+
+"seq_1121", "seq_1142" were excluded previously because of low identity of best matches
+
+seq_0490 is genus Chironomus (checked manually, best hit on NCBI is NA for some reason but other hits are all form that genus)
+
+
+"seq_0074","seq_0196","seq_0862","seq_1087","seq_1274" sequences have low best hit values (<94%).
+I set the Genus & species level to NA
+
+
+## consensus taxonomy
+```{r}
+
+#keep ncbi seqs
+seq_keep_ncbi <- c("seq_0833", "seq_0902", "seq_0037","seq_0544", "seq_1589")
+
+tax_16S_clean[tax_16S_clean$seq %in%seq_keep_ncbi, ] <- 
+ncbi_16S_u_tax[ncbi_16S_u_tax$seq %in% seq_keep_ncbi,]
+
+#remove genus & species level
+seq_to_family <- c("seq_0058", "seq_0074","seq_0196","seq_0862","seq_1087","seq_1274")
+
+tax_16S_clean[tax_16S_clean$seq %in% seq_to_family, c("genus", "species")] <- NA_character_
+
+#remove species level
+seq_to_genus <- c("seq_0477", "seq_0034", "seq_1092", "seq_0490")
+
+tax_16S_clean[tax_16S_clean$seq %in% seq_to_genus,"species"] <- NA_character_
+
+
+#remove seqs
+seq_excl <- c("seq_0008","seq_0791","seq_0803","seq_0834","seq_1382","seq_1711", "seq_1121", "seq_1142")
+
+tax_16S_clean <- 
+  tax_16S_clean %>% 
+  filter(!seq %in% seq_excl)
+```
+
+
+
+#phyla distribution
+
+```{r}
+Phylum_COI <- 
+tax_COI_clean %>% 
+  pivot_longer(-seq, names_to = "rank", values_to = "taxa") %>% 
+  left_join(pivot_longer(prob_COI, -seq, names_to = "rank", values_to = "prob")) %>% 
+  filter(rank == "phylum")
+
+
+Phylum_COI %>% 
+  mutate(taxa = ifelse(is.na(taxa), "not assigned", taxa)) %>% 
+  mutate(prob = round(prob, 1)) %>% 
+  group_by(taxa) %>% 
+  mutate(N = n()) %>% 
+  group_by(taxa, prob) %>% 
+  summarise(n = n(), N = unique(N)) %>%
+  group_by(taxa) %>% 
+  arrange(N, desc(prob)) %>% 
+  mutate(taxa = factor(taxa, levels = unique(.$taxa))) %>% 
+  ggplot(., aes(x = taxa, y = n, fill = prob))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  scale_fill_viridis_b()+
+  scale_alpha(guide = 'none')+
+  theme_minimal()
+```
+
+Arthropods
+
+```{r}
+Arthropds_COI <- 
+tax_COI_clean %>% 
+  filter(phylum == "Arthropoda") %>% 
+  pivot_longer(-seq, names_to = "rank", values_to = "taxa") %>% 
+  left_join(pivot_longer(prob_COI, -seq, names_to = "rank", values_to = "prob")) %>% 
+  filter(rank == "class")
+
+Arthropds_COI %>% 
+  mutate(taxa = ifelse(is.na(taxa), "not assigned", taxa)) %>% 
+  mutate(prob = ifelse(taxa == "not assigned", NA, prob)) %>% 
+  mutate(prob = round(prob, 1)) %>% 
+  group_by(taxa) %>% 
+  mutate(N = n()) %>% 
+  group_by(taxa, prob) %>% 
+  summarise(n = n(), N = unique(N)) %>%
+  group_by(taxa) %>% 
+  arrange(N, desc(prob)) %>% 
+  mutate(taxa = factor(taxa, levels = unique(.$taxa))) %>% 
+  ggplot(., aes(x = taxa, y = n, fill = prob))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  scale_fill_viridis_b()+
+  theme_minimal()
+
+```
+Insects
+
+```{r}
+Insecta_COI <- 
+tax_COI_clean %>% 
+  filter(class == "Insecta") %>% 
+  pivot_longer(-seq, names_to = "rank", values_to = "taxa") %>% 
+  left_join(pivot_longer(prob_COI, -seq, names_to = "rank", values_to = "prob")) %>% 
+  filter(rank == "order")
+  
+
+Insecta_COI %>% 
+  mutate(taxa = ifelse(is.na(taxa), "not assigned", taxa)) %>% 
+  mutate(prob = ifelse(taxa == "not assigned", NA, prob)) %>% 
+  mutate(prob = round(prob, 1)) %>% 
+  group_by(taxa) %>% 
+  mutate(N = n()) %>% 
+  group_by(taxa, prob) %>% 
+  summarise(n = n(), N = unique(N)) %>%
+  group_by(taxa) %>% 
+  arrange(N, desc(prob)) %>% 
+  mutate(taxa = factor(taxa, levels = unique(.$taxa))) %>%
+  ggplot(., aes(x = taxa, y = n, fill = prob))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  scale_fill_viridis_b()+
+  theme_minimal()
+
+```
+
+16S
+
+```{r}
+Phylum_16S <- 
+tax_16S_clean %>% 
+  pivot_longer(-seq, names_to = "rank", values_to = "taxa") %>% 
+  left_join(pivot_longer(prob_16S, -seq, names_to = "rank", values_to = "prob")) %>% 
+  filter(rank == "phylum")
+
+
+Phylum_16S %>% 
+  mutate(taxa = ifelse(is.na(taxa), "not assigned", taxa)) %>% 
+  mutate(prob = ifelse(taxa == "not assigned", NA, prob)) %>%  
+  mutate(prob = round(prob, 1)) %>% 
+  group_by(taxa) %>% 
+  mutate(N = n()) %>% 
+  group_by(taxa, prob) %>% 
+  summarise(n = n(), N = unique(N)) %>%
+  group_by(taxa) %>% 
+  arrange(N, desc(prob)) %>% 
+  mutate(taxa = factor(taxa, levels = unique(.$taxa))) %>% 
+  ggplot(., aes(x = taxa, y = n, fill = prob))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  scale_fill_viridis_b()+
+  theme_minimal()
+```
+
+Arthropods
+
+```{r}
+Arthropds_16S <- 
+tax_16S_clean %>% 
+  filter(phylum == "Arthropoda") %>% 
+  pivot_longer(-seq, names_to = "rank", values_to = "taxa") %>% 
+  left_join(pivot_longer(prob_16S, -seq, names_to = "rank", values_to = "prob")) %>% 
+  filter(rank == "class")
+
+Arthropds_16S %>% 
+ mutate(taxa = ifelse(is.na(taxa), "not assigned", taxa)) %>% 
+  mutate(prob = ifelse(taxa == "not assigned", NA, prob)) %>% 
+  mutate(prob = round(prob, 1)) %>% 
+  group_by(taxa) %>% 
+  mutate(N = n()) %>% 
+  group_by(taxa, prob) %>% 
+  summarise(n = n(), N = unique(N)) %>%
+  group_by(taxa) %>% 
+  arrange(N, desc(prob)) %>% 
+  mutate(taxa = factor(taxa, levels = unique(.$taxa))) %>%
+  ggplot(., aes(x = taxa, y = n, fill = prob))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  scale_fill_viridis_b()+
+  theme_minimal()
+
+```
+Insects
+
+```{r}
+Insecta_16S <- 
+tax_16S_clean %>% 
+  filter(class == "Insecta") %>% 
+  pivot_longer(-seq, names_to = "rank", values_to = "taxa") %>% 
+  left_join(pivot_longer(prob_16S, -seq, names_to = "rank", values_to = "prob")) %>% 
+  filter(rank == "order")
+  
+
+Insecta_16S %>% 
+  mutate(taxa = ifelse(is.na(taxa), "not assigned", taxa)) %>% 
+  mutate(prob = ifelse(taxa == "not assigned", NA, prob)) %>% 
+  mutate(prob = round(prob, 1)) %>% 
+  group_by(taxa) %>% 
+  mutate(N = n()) %>% 
+  group_by(taxa, prob) %>% 
+  summarise(n = n(), N = unique(N)) %>%
+  group_by(taxa) %>% 
+  arrange(N, desc(prob)) %>% 
+  mutate(taxa = factor(taxa, levels = unique(.$taxa))) %>%
+  ggplot(., aes(x = taxa, y = n, fill = prob))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  scale_fill_viridis_b()+
+  theme_minimal()
+
+```
+
+## joined figure
+```{r}
+
+taxa_dist_16S <- 
+Phylum_16S %>% 
+  rbind(Arthropds_16S) %>% 
+  rbind(Insecta_16S) %>% 
+  mutate(taxa = ifelse(is.na(taxa), "not assigned", taxa)) %>% 
+  mutate(prob = ifelse(taxa == "not assigned", NA, prob)) %>% 
+  mutate(prob = round(prob, 1)) %>% 
+  group_by(rank, taxa) %>% 
+  mutate(N = n()) %>% 
+  group_by(rank, taxa, prob) %>% 
+  summarise(n = n(), N = unique(N)) %>% 
+  mutate(marker = "16S") 
+
+taxa_dist_COI <- 
+Phylum_COI %>% 
+  rbind(Arthropds_COI) %>% 
+  rbind(Insecta_COI) %>% 
+  mutate(taxa = ifelse(is.na(taxa), "not assigned", taxa)) %>% 
+  mutate(prob = ifelse(taxa == "not assigned", NA, prob)) %>% 
+  mutate(prob = round(prob, 1)) %>% 
+  group_by(rank, taxa) %>% 
+  mutate(N = n()) %>% 
+  group_by(rank, taxa, prob) %>% 
+  summarise(n = n(), N = unique(N)) %>% 
+  mutate(marker = "COI") 
+
+taxa_dist_joined <- 
+rbind(taxa_dist_16S, taxa_dist_COI) %>% 
+  group_by(rank, taxa) %>% 
+  arrange(N, desc(prob)) %>% 
+  mutate(taxa = factor(taxa, levels = unique(.$taxa)))
+
+phylum_plot <- 
+  taxa_dist_joined %>% 
+  filter(rank == "phylum") %>% 
+  ggplot(., aes(x = taxa, y = n, fill = factor(prob)))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  facet_grid(rank ~ marker)+
+  scale_fill_manual(values=met.brewer("Homer2", 5, type="continuous"),
+                    na.value = "grey",
+                    labels = c("[0.6-0.65]","(0.65-0.75)","[0.75-0.85]","(0.85-0.95)", "[0.95-1]"),
+                    name = "bootstrap\nprobability",
+                    na.translate=TRUE,
+                    guide = guide_legend(reverse = TRUE,nrow =2, byrow = TRUE))+
+  scale_alpha(guide = 'none')+
+  theme_minimal()+
+  labs(x = "Phyla (all)\n ", y = "")+
+  theme(
+  strip.background = element_blank(),
+  strip.text.y = element_blank(),
+  axis.text.y = element_text(size = 8)
+)
+
+class_plot <- 
+  taxa_dist_joined %>% 
+  filter(rank == "class") %>% 
+  mutate(taxa = forcats::fct_relevel(taxa, "not assigned", after = 1)) %>% 
+  ggplot(., aes(x = taxa, y = n, fill = factor(prob)))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  facet_grid(rank ~ marker)+
+  scale_fill_manual(values=met.brewer("Homer2", 5, type="continuous"),
+                    na.value = "grey",
+                    labels = c("[0.6-0.65]","(0.65-0.75)","[0.75-0.85]","(0.85-0.95)", "[0.95-1]"),
+                    name = "bootstrap\nprobability",
+                    na.translate=TRUE,
+                    guide = guide_legend(reverse = TRUE, nrow = 2, byrow = TRUE))+
+  theme_minimal()+
+  labs(x = "Classes from Phylum\nArthropoda", y = "")+
+  theme(
+  strip.background = element_blank(),
+  strip.text.x = element_blank(),
+  strip.text.y = element_blank(),
+  axis.text.y = element_text(size = 8)
+)
+
+
+order_plot <- 
+  taxa_dist_joined %>% 
+  filter(rank == "order") %>% 
+  mutate(taxa = forcats::fct_relevel(taxa, "not assigned", after = 0L)) %>% 
+  ggplot(., aes(x = taxa, y = n, fill = factor(prob)))+
+  geom_bar(position = "stack", stat = "identity")+
+  coord_flip()+
+  facet_grid(rank ~ marker)+
+  scale_fill_manual(values=met.brewer("Homer2", 5, type="continuous"),
+                    na.value = "grey",
+                    labels = c("[0.6-0.65]","(0.65-0.75)","[0.75-0.85]","(0.85-0.95)", "[0.95-1]"),
+                    name = "bootstrap\nprobability",
+                    na.translate=TRUE,
+                    guide = guide_legend(reverse = TRUE, nrow = 2, byrow = TRUE))+
+  theme_minimal()+
+  labs(x = "Order from Class\nInsecta", y = "number of OTUs (1%) in each taxa")+
+  theme(
+  strip.background = element_blank(),
+  strip.text.x = element_blank(),
+  strip.text.y = element_blank(),
+  axis.text.y = element_text(size = 8)
+)
+  
+ggarrange(
+  phylum_plot, class_plot, order_plot, 
+  common.legend = TRUE, legend = "bottom", ncol = 1, heights = c(14/14, 8/14, 13/14)
+  )
+
+ggsave(here("Figures", "final", "Taxa_distribution.pdf"), width = 112, height = 160, units = "mm")
+```
+
+
+# comparision with field data
+
+## moths survey
+
+###rgbif
+
+harmonize taxonomic names for moths
+```{r}
+
+Moths_spec <- unique(Moths$SciName)
+
+
+gbif_specnames <- 
+lapply(Moths_spec, function(x) {
+  name_backbone(name = x, 
+                rank = "species", 
+                class = "Insecta")
+}) %>% bind_rows()
+
+
+Moths_taxa_full <-  
+  gbif_specnames %>% 
+  select(kingdom, phylum, class, order, family, genus, species) %>% 
+  mutate(SciName = Moths_spec) %>% 
+  relocate(SciName)
+```
+
+make species abundance table in OTU table format
+```{r}
+# names that differ in gbif
+Moths_taxa_full %>% 
+  filter(SciName != species) 
+
+#replace
+Moths <- 
+Moths %>% 
+  mutate(SciName = case_when(SciName == "Cirrhia icteritia" ~ "Xanthia icteritia",
+                             TRUE ~ SciName))
+
+Moths_light_ASV <- 
+  Moths %>% 
+  select(SciName, Antal, ID) %>% 
+    mutate(rowID = 1:n()) %>% 
+    group_by(SciName, ID) %>% 
+    summarise(Antal = sum(Antal)) %>% # one case were a species was listed twice
+    pivot_wider(names_from = SciName, values_from= Antal, values_fill = 0)
+```
+
+### moths from eDNA
+```{r}
+#COI
+Moths_samples_COI <- sampleInfo[sampleInfo$Station == "ECO" & 
+                              sampleInfo$Barcode == "COI" ,]$Sample
+
+Moths_ASV_COI <- ASV_COI[Moths_samples_COI, ]
+Moths_ASV_COI <- Moths_ASV_COI[,colSums(Moths_ASV_COI) > 0]
+
+moths_seq_COI <- 
+tax_COI_clean %>% 
+  filter(seq %in% colnames(Moths_ASV_COI))
+
+#16S
+Moths_samples_16S<- sampleInfo[sampleInfo$Station == "ECO" & 
+                              sampleInfo$Barcode == "16S" ,]$Sample
+
+Moths_ASV_16S <- ASV_16S[Moths_samples_16S, ]
+Moths_ASV_16S <- Moths_ASV_16S[,colSums(Moths_ASV_16S) > 0]
+
+moths_seq_16S <- 
+tax_16S_clean %>% 
+  filter(seq %in% colnames(Moths_ASV_16S))
+```
+
+### euler moth 
+
+colour for euler plots
+```{r}
+colour_eul_met <-  met.brewer("Hokusai3",3)[c(2,3,1)]
+```
+
+```{r}
+M_COI = 
+  moths_seq_COI %>% filter(order == "Lepidoptera") %>% 
+  pull(species) %>% 
+  na.omit() %>% 
+  unique()
+
+
+M_16S = 
+  moths_seq_16S %>% 
+  filter(order == "Lepidoptera") %>% 
+  pull(species) %>% 
+  na.omit() %>% 
+  unique()
+
+M_lt = Moths_taxa_full %>% filter(order == "Lepidoptera") %>% pull(SciName)
+
+M_COI_M_16S  = dplyr::intersect(M_COI, M_16S)
+M_COI_M_lt = dplyr::intersect(M_COI, M_lt)
+M_16S_M_lt = dplyr::intersect(M_16S, M_lt)
+
+v1 <- euler(c(A=length(M_COI), 
+             B=length(M_16S), 
+             C=length(M_lt),
+             "A&B"=length(M_COI_M_16S),
+             "A&C"=length(M_COI_M_lt),
+             "B&C"=length(M_16S_M_lt)))
+
+jpeg(here("Figures", "Euler_Moth_Lep.jpeg"))
+
+plot(v1, 
+     fills = alpha(colour_eul_met,0.8),
+     labels = c("COI", "16S", "light trapping"),
+     quantities = TRUE,
+     main = "Moth survey - only Moths" )
+
+v1_max <- length(unique(c(M_COI, M_16S, M_lt)))
+```
+
+### euler Arthropods
+
+```{r}
+#unique OTUs identified to species level
+A_COI = 
+  moths_seq_COI %>% 
+  filter(phylum == "Arthropoda") %>% 
+  pull(species) %>% 
+  na.omit() %>% 
+  unique()
+
+A_16S = 
+  moths_seq_16S %>% 
+  filter(phylum == "Arthropoda") %>% 
+  pull(species) %>% 
+  na.omit() %>% 
+  unique()
+
+A_lt = Moths$SciName %>% unique()
+
+A_COI_A_16S  = dplyr::intersect(A_COI, A_16S)
+A_COI_A_lt = dplyr::intersect(A_COI, A_lt)
+A_16S_A_lt = dplyr::intersect(A_16S, A_lt)
+
+v2 <- euler(c(A=length(A_COI), 
+             B=length(A_16S), 
+             C=length(A_lt),
+             "A&B"=length(A_COI_A_16S),
+             "A&C"=length(A_COI_A_lt),
+             "B&C"=length(A_16S_A_lt)))
+
+jpeg(here("Figures", "Euler_Moth_Art.jpeg"))
+
+plot(v2, 
+     fills = alpha(colour_eul_met,0.8),
+     labels = c("COI", "16S", "light trapping"),
+     quantities = TRUE,
+     main = "Moth survey - all Arthropods" )
+
+v2_max <- length(unique(c(A_COI, A_16S,A_lt)))
+
+```
+
+
+OTUs ID'd to genus but not to species
+```{r}
+#COI
+  moths_seq_COI %>% 
+  filter(phylum == "Arthropoda") %>% 
+  filter(!is.na(genus)) %>% 
+  filter(is.na(species)) 
+
+#16S
+moths_seq_16S %>% 
+  filter(phylum == "Arthropoda") %>%  
+  filter(!is.na(genus)) %>% 
+  filter(is.na(species))
+```
+
+for COI 10 additional OTUs could only be ID'd at genus level. The OTUs belong to 10 different genera, none of which is present in the light trap. These can therefore be counted as 10 seperate species
+
+## Butterfly survey (F2F)
+
+```{r}
+#group over transects 
+Insects_g <- 
+  Insects %>% 
+  group_by(IDnr, Habitat, Date, Species) %>% 
+  summarise(Individuals = sum(Individuals))
+```
+
+###rgbif
+
+harmonize taxonomic names for pollinators
+```{r}
+
+Pol_spec <- unique(Insects_g$Species)
+
+
+gbif_specnames <- 
+lapply(Pol_spec, function(x) {
+  name_backbone(name = x, 
+                rank = "species", 
+                class = "Insecta")
+}) %>% bind_rows()
+
+
+Pol_taxa_full <-  
+  gbif_specnames %>% 
+  select(kingdom, phylum, class, order, family, genus, species) %>% 
+  mutate(Species = Pol_spec) %>% 
+  relocate(Species)
+```
+
+
+make species abundance table in OTU table format
+```{r}
+# names that differ in gbif
+Pol_taxa_full %>% 
+  filter(Species != species) %>% 
+  select(Species, species)
+
+#replace
+Insects_g <- 
+  Insects_g %>% 
+  mutate(Species = case_when(
+    Species == "Bombus lucorum coll." ~ "Bombus lucorum",
+    Species == "Eumedonia eumedon" ~ "Aricia eumedon",
+    TRUE ~ Species))
+
+Pol_transect_ASV <- 
+  Insects_g %>% 
+  ungroup() %>% 
+  select(IDnr, Species, Individuals) %>% 
+    pivot_wider(names_from = Species, values_from= Individuals, values_fill = 0)
+```
+
+
+### Pollinators from eDNA
+```{r}
+#COI
+Pol_samples_COI <- sampleInfo[sampleInfo$Station %in% c("SF", "SI", "SB") & 
+                              sampleInfo$Barcode == "COI" ,]$Sample
+
+Pol_ASV_COI <- ASV_COI[Pol_samples_COI, ]
+Pol_ASV_COI <- Pol_ASV_COI[,colSums(Pol_ASV_COI) > 0]
+
+
+Pol_seq_COI <- 
+tax_COI_clean %>% 
+  filter(seq %in% colnames(Pol_ASV_COI))
+
+#16S
+Pol_samples_16S <- sampleInfo[sampleInfo$Station %in% c("SF", "SI", "SB") & 
+                              sampleInfo$Barcode == "16S" ,]$Sample
+
+Pol_ASV_16S <- ASV_16S[Pol_samples_16S, ]
+Pol_ASV_16S <- Pol_ASV_16S[,colSums(Pol_ASV_16S) > 0]
+
+Pol_seq_16S <- 
+tax_16S_clean %>% 
+  filter(seq %in% colnames(Pol_ASV_16S))
+```
+
+
+### euler Pollinators 
+```{r}
+P_COI = 
+  Pol_seq_COI %>% 
+  filter(order == "Lepidoptera" | family == "Apidae") %>% 
+  pull(species) %>% 
+  na.omit() %>% 
+  unique()
+
+
+P_16S = 
+  Pol_seq_16S %>% 
+  filter(order == "Lepidoptera"| family == "Apidae") %>% 
+  pull(species) %>% 
+  na.omit() %>% 
+  unique()
+
+P_f2f = 
+  Insects_g %>%
+  filter(Individuals > 0) %>% 
+  pull(Species) %>% 
+  unique()
+
+#exclude species not ID'd to species level
+P_f2f <- P_f2f[!grepl("unidentified", P_f2f)]
+P_f2f <-  P_f2f[-match("Bombus", P_f2f)]
+
+P_COI_P_16S  = dplyr::intersect(P_COI, P_16S)
+P_COI_P_f2f = dplyr::intersect(P_COI, P_f2f)
+P_16S_P_f2f = dplyr::intersect(P_16S, P_f2f)
+
+v3 <- euler(c(A=length(P_COI), 
+             B=length(P_16S), 
+             C=length(P_f2f),
+             "A&B"=length(P_COI_P_16S),
+             "A&C"=length(P_COI_P_f2f),
+             "B&C"=length(P_16S_P_f2f)))
+
+jpeg(here("Figures", "Euler_Pol_Pol.jpeg"))
+
+plot(v3, 
+     fills = alpha(colour_eul_met,0.8),
+     labels = c("COI", "16S", "transect counts"),
+     quantities = TRUE,
+     main = "Pollinator transects - Bees & Butterflies" )
+
+v3_max <- length(unique(c(P_COI, P_16S, P_f2f)))
+```
+
+
+### euler Arthropods
+
+```{r}
+
+A_COI = 
+  Pol_seq_COI %>% 
+  filter(phylum == "Arthropoda") %>% 
+  pull(species) %>% 
+  na.omit() %>% 
+  unique()
+
+
+A_16S = 
+  Pol_seq_16S %>% 
+  filter(phylum == "Arthropoda") %>% 
+  pull(species) %>% 
+  na.omit() %>% 
+  unique()
+
+A_COI_A_16S  = dplyr::intersect(A_COI, A_16S)
+A_COI_P_f2f = dplyr::intersect(A_COI, P_f2f)
+A_16S_P_f2f = dplyr::intersect(A_16S, P_f2f)
+
+v4 <- euler(c(A=length(A_COI), 
+             B=length(A_16S), 
+             C=length(P_f2f),
+             "A&B"=length(A_COI_A_16S),
+             "A&C"=length(A_COI_P_f2f),
+             "B&C"=length(A_16S_P_f2f)))
+
+jpeg(here("Figures", "Euler_Pol_Art.jpeg"))
+
+plot(v4, 
+     fills = alpha(colour_eul_met,0.8),
+     labels = c("COI", "16S", "transects"),
+     quantities = TRUE,
+     main = "Pollinator transects - all Arthropods" )
+
+dev.off()
+
+v4_max <- length(unique(c(A_16S, A_COI, P_f2f)))
+```
+
+OTUs ID'd to genus but not to species
+```{r}
+#COI
+  Pol_seq_COI %>% 
+  filter(phylum == "Arthropoda") %>% 
+  filter(!is.na(genus)) %>% 
+  filter(is.na(species)) 
+
+#16S
+Pol_seq_16S %>% 
+  filter(phylum == "Arthropoda") %>%  
+  filter(!is.na(genus)) %>% 
+  filter(is.na(species))
+```
+For COI 6 additional OTUs could only be ID'd at genus level belonging all the same genus. For 16S one OTU, belonging to the Lepidoptera genus Rhagades could not be id'd to species level. 
+
+### joined euler
+
+```{r}
+
+
+#create legend
+legend_plot <- 
+tibble(A = (1:3),
+       B = factor(c("COI", "16S", "traditional\nsurvey"), 
+                  levels = c("COI", "16S", "traditional\nsurvey"))) %>% 
+  ggplot(aes(x = A, y = A, fill = B))+
+  geom_point(shape = 21, size = 10, alpha = 0.8)+
+  scale_fill_manual(values = colour_eul_met)+
+  theme(legend.position = "bottom", 
+        legend.title=element_blank(),
+        legend.key=element_blank())
+
+legend_plot <- ggplot_gtable(ggplot_build(legend_plot))
+
+my_legend <- legend_plot$grobs[[which(sapply(legend_plot$grobs, function(x) x$name) == "guide-box")]]
+
+
+eulerP <- gridExtra::arrangeGrob(grobs = list(
+plot(v1, 
+     fills = alpha(colour_eul_met,0.8),
+    # labels = list(labels = c("COI", "16S", "light"), cex = 0.8),
+    labels = FALSE,
+     quantities = TRUE,
+     edges = FALSE,
+     main = list(label = "A)    Moth site - only Moths",
+                 cex = 0.8, vjust = 1.5)),
+
+plot(v2, 
+     fills = alpha(colour_eul_met,0.8),
+    # labels = list(labels = c("COI", "16S", "light"), cex = 0.8),
+    labels = FALSE,
+     quantities = TRUE,
+     edges = FALSE,
+     main = list(label = "B)    Moth site - all Arthropods",
+     cex = 0.8, vjust = 1.5)),
+
+plot(v3, 
+     fills = alpha(colour_eul_met,0.8),
+    # labels = list(labels = c("COI", "16S", "transects"), cex = 0.8),
+    labels = FALSE,
+     quantities = TRUE,
+     edges = FALSE,
+     main = list(label = "C)    Pollinator site - Bees & Butterflies" ,
+     cex = 0.8, vjust = 1.5)),
+
+plot(v4, 
+     fills = alpha(colour_eul_met,0.8),
+    # labels = list(labels = c("COI", "16S", "transects"), cex = 0.8),
+    labels = FALSE,
+     quantities = TRUE,
+     edges = FALSE,
+     main = list(label = "D)    Pollinator site - all Arthropods",
+     cex = 0.8, vjust = 1.5)),
+
+my_legend
+),
+
+ncol = 1, 
+heights = c(2, 2, 2, 2, 1))
+
+
+
+ggsave(filename = here("Figures", "final", "Euler_combined.pdf"),
+       plot = eulerP, width = 80, units = "mm")
+  
+?arrangeGrob
+
+```
+
+
+
+#Bubblechart
+
+## moths survey
+```{r}
+
+# Moths
+#COI
+Moths_pa_coi <- 
+Moths_ASV_COI%>%
+  tibble::rownames_to_column("ID") %>% 
+  pivot_longer(starts_with("seq"),
+               names_to = "seq", 
+               values_to = "abundance") %>% 
+  left_join(tax_COI_clean) %>% 
+  group_by(kingdom, phylum,class, order,family,genus,species) %>% 
+  summarise(abundance = sum(abundance>0)) %>% 
+  filter(kingdom == "Animalia") %>% 
+  filter(!is.na(species)) %>% 
+  mutate(method = "COI")
+
+#16S
+Moths_pa_16S <- 
+Moths_ASV_16S %>%
+  tibble::rownames_to_column("ID") %>% 
+  pivot_longer(starts_with("seq"),
+               names_to = "seq", 
+               values_to = "abundance") %>% 
+  left_join(tax_16S_clean) %>% 
+  group_by(kingdom, phylum,class, order,family,genus,species) %>% 
+  summarise(abundance = sum(abundance >0)) %>% 
+  filter(kingdom == "Animalia") %>%
+  filter(!is.na(species)) %>%
+  mutate(method = "16S")
+
+# transects
+Moths_pa_light<- 
+  Moths_light_ASV %>% 
+  pivot_longer(!one_of("ID"),
+               names_to = "species", 
+               values_to = "abundance") %>% 
+  group_by(species) %>% 
+  summarise(abundance = sum(abundance > 0)) %>% 
+  filter(abundance > 0) %>% 
+  left_join(Moths_taxa_full) %>% 
+  select(phylum,class, order,family,genus,species, abundance) %>% 
+  filter(!is.na(order)) %>% 
+  mutate(method = "light trapping")
+
+bind_rows(list(Moths_pa_16S, 
+               Moths_pa_coi, 
+               Moths_pa_light)) %>% 
+  arrange(phylum, class, order, family, genus, species) %>% 
+  mutate(species = factor(species, levels = unique(.$species))) %>% 
+  mutate(order = case_when(is.na(order) ~ family,
+                           TRUE ~ order)) %>% 
+  mutate(order = factor(order, levels = unique(.$order))) %>% 
+  ggplot(aes(x = species, y = method, colour = method, size = abundance))+
+  geom_point()+
+  facet_nested(phylum + order~., scales = "free", space = "free", nest_line = TRUE, switch = "y")+
+  coord_flip()+
+  scale_colour_manual(values = colour_eul_met, guide = 'none')+
+  scale_size_continuous(breaks = c(1,3,6,9,12,15))+
+  guides(size = guide_legend(title.position="top", title.hjust = 0.5))+
+  theme_bw() +
+  theme(
+    strip.text.y.left = element_text(angle = 0, size = 8),
+    plot.margin = margin(0.5, 0.5, 0.5, 0.5, unit = "cm"),
+   # plot.title = element_text(size = 15, face = "bold"),
+    strip.placement = "outside",
+    axis.title.y = element_blank(),
+    axis.text = element_text(size = 8),
+    legend.position = "bottom",
+   strip.background = element_blank(),
+        ggh4x.facet.nestline = element_line(colour = "blue")
+   # panel.grid.major.y = element_blank(),
+    )
+
+ggsave(here("Figures", "Moths_bubble.pdf"), height = 14, width = 5)
+
+
+```
+
+## Butterfly survey
+```{r}
+# F2F
+
+#COI
+Pol_pa_coi <- 
+Pol_ASV_COI %>%
+  tibble::rownames_to_column("ID") %>% 
+  pivot_longer(starts_with("seq"),
+               names_to = "seq", 
+               values_to = "abundance") %>% 
+  left_join(tax_COI_clean) %>% 
+  group_by(kingdom, phylum,class, order,family,genus,species) %>% 
+  summarise(abundance = sum(abundance>0)) %>% 
+  filter(kingdom == "Animalia") %>%
+  filter(!is.na(species)) %>% 
+  mutate(method = "COI")
+
+#16S
+
+Pol_pa_16S <- 
+Pol_ASV_16S %>%
+  tibble::rownames_to_column("ID") %>% 
+  pivot_longer(starts_with("seq"),
+               names_to = "seq", 
+               values_to = "abundance") %>% 
+  left_join(tax_16S_clean) %>% 
+  group_by(kingdom, phylum,class, order,family,genus,species) %>% 
+  summarise(abundance = sum(abundance >0)) %>% 
+  filter(kingdom == "Animalia") %>%
+  filter(!is.na(species)) %>%
+  mutate(method = "16S")
+
+# transects
+Pol_pa_trans<- 
+  Pol_transect_ASV %>% 
+  pivot_longer(!one_of("IDnr"),
+               names_to = "species", 
+               values_to = "abundance") %>% 
+  group_by(species) %>% 
+  summarise(abundance = sum(abundance >0)) %>% 
+  filter(abundance > 0) %>% 
+  left_join(select(Pol_taxa_full, -Species)) %>% 
+  select(phylum,class, order,family,genus,species, abundance) %>% 
+  filter(!is.na(order)) %>% 
+  mutate(method = "transect")
+
+bind_rows(list(Pol_pa_16S, 
+               Pol_pa_coi, 
+               Pol_pa_trans)) %>% 
+   arrange(phylum, class, order, family, genus, species) %>% 
+  mutate(species = factor(species, levels = unique(.$species))) %>% 
+  mutate(order = case_when(is.na(order) ~ family,
+                           TRUE ~ order)) %>% 
+  mutate(order = factor(order, levels = unique(.$order))) %>% 
+  ggplot(aes(x = species, y = method, colour = method, size = abundance))+
+  geom_point()+
+  facet_nested(phylum + order~., scales = "free", space = "free", nest_line = TRUE, switch = "y")+
+  coord_flip()+
+  scale_colour_manual(values = colour_eul_met, guide = 'none')+
+  scale_size_continuous(breaks = c(1,3,6,9,12,15))+
+  guides(size = guide_legend(title.position="top", title.hjust = 0.5))+
+  theme_bw() +
+  theme(
+    strip.text.y.left = element_text(angle = 0, size = 8),
+    plot.margin = margin(0.5, 0.5, 0.5, 0.5, unit = "cm"),
+   # plot.title = element_text(size = 15, face = "bold"),
+    strip.placement = "outside",
+    axis.title.y = element_blank(),
+    axis.text = element_text(size = 8),
+    legend.position = "bottom",
+   strip.background = element_blank(),
+        ggh4x.facet.nestline = element_line(colour = "blue")
+   # panel.grid.major.y = element_blank(),
+    )
+
+ggsave(here("Figures", "F2F_bubble.pdf"), height = 8, width = 5)
+
+
+```
+
+##IBA
+```{r}
+#COI
+IBA_samples_COI <- sampleInfo[sampleInfo$Station == "IBA" & 
+                              sampleInfo$Barcode == "COI" ,]$Sample
+
+IBA_ASV_COI <- ASV_COI[IBA_samples_COI, ]
+IBA_ASV_COI <- IBA_ASV_COI[,colSums(IBA_ASV_COI) > 0]
+
+#16S
+IBA_samples_16S <- sampleInfo[sampleInfo$Station == "IBA" & 
+                              sampleInfo$Barcode == "16S" ,]$Sample
+
+IBA_ASV_16S <- ASV_16S[IBA_samples_16S, ]
+IBA_ASV_16S <- IBA_ASV_16S[,colSums(IBA_ASV_16S) > 0]
+
+
+#COI
+IBA_pa_coi <- 
+IBA_ASV_COI %>%
+  tibble::rownames_to_column("ID") %>% 
+  pivot_longer(starts_with("seq"),
+               names_to = "seq", 
+               values_to = "abundance") %>% 
+  left_join(tax_COI_clean) %>% 
+  group_by(kingdom, phylum,class, order,family,genus,species) %>% 
+  summarise(abundance = sum(abundance>0)) %>% 
+  filter(kingdom == "Animalia") %>%
+  filter(!is.na(species)) %>% 
+  mutate(method = "COI")
+
+#16S
+
+IBA_pa_16S <- 
+IBA_ASV_16S %>%
+  tibble::rownames_to_column("ID") %>% 
+  pivot_longer(starts_with("seq"),
+               names_to = "seq", 
+               values_to = "abundance") %>% 
+  left_join(tax_16S_clean) %>% 
+  group_by(kingdom, phylum,class, order,family,genus,species) %>% 
+  summarise(abundance = sum(abundance >0)) %>% 
+  filter(kingdom == "Animalia") %>%
+  filter(!is.na(species)) %>%
+  mutate(method = "16S")
+```
+
+
+##combined graph
+```{r}
+Bubble_data_long <- 
+bind_rows(list(Pol_pa_16S, 
+               Pol_pa_coi, 
+               Pol_pa_trans)) %>% 
+  mutate(study = "Pollinator site") %>% 
+  bind_rows(., {bind_rows(
+               Moths_pa_16S,
+               Moths_pa_coi,
+               Moths_pa_light) %>% 
+       mutate(study = "Moths site")
+      }) %>% 
+  bind_rows(., {bind_rows(
+               IBA_pa_coi,
+               IBA_pa_16S) %>% 
+       mutate(study = "Beech forest")
+      }) %>% 
+   arrange(phylum, class, order, family, genus, species) %>% 
+  mutate(species = factor(species, levels = unique(.$species))) %>% 
+  mutate(order = case_when(is.na(order) ~ family,
+                           TRUE ~ order)) %>% 
+  mutate(order = factor(order, levels = unique(.$order))) %>% 
+  mutate(phylum = as.factor(phylum)) %>% 
+  mutate(phylum = fct_relevel(phylum, "Annelida", after = Inf))
+
+Bubble_data_LepHym <- 
+  Bubble_data_long %>% 
+  filter(order %in% c("Lepidoptera", "Hymenoptera"))
+
+Bubble_data_other <- 
+  Bubble_data_long %>% 
+  filter(!order %in% c("Lepidoptera", "Hymenoptera"))
+  
+Other <- 
+ggplot(Bubble_data_other, aes(x = species, y = method, fill = method, size = abundance))+
+  geom_point(shape = 21, alpha = 0.9)+
+  facet_nested(phylum + order~study, scales = "free", space = "free", nest_line = TRUE, switch = "y")+
+  coord_flip()+
+  labs(x = "", y = "", size = "prevalence")+
+  scale_fill_manual(values = colour_eul_met, guide = 'none')+
+  scale_size_continuous(breaks = colour_eul_met[c(1,2,3,3)], range = c(1,5))+
+  guides(size = guide_legend(nrow = 1))+
+  theme_bw() +
+  theme(
+   strip.text.y.left = element_text(angle = 0, size = 6),
+   strip.placement = "outside",
+   axis.text = element_text(size = 6),
+   axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+   axis.text.y = element_text(face = "italic"),
+   legend.position = "bottom", 
+   strip.background = element_blank(),
+   ggh4x.facet.nestline = element_line(colour = "blue")
+    )
+
+
+LepHym <- 
+ggplot(Bubble_data_LepHym, aes(x = species, y = method, fill = method, size = abundance))+
+  geom_point(shape = 21, alpha = 0.9)+
+  facet_nested(phylum + order~study, scales = "free", space = "free", nest_line = TRUE, switch = "y")+
+  coord_flip()+
+  labs(x = "", y = "", size = "prevalence")+
+  scale_fill_manual(values = colour_eul_met[c(1,2,3,3)], guide = 'none')+
+  scale_size_continuous(breaks = c(1,3,6,9,12,15), range = c(1,5))+
+  guides(size = guide_legend(nrow = 1))+
+  theme_bw() +
+  theme(
+   strip.text.y.left = element_text(angle = 0, size = 6),
+   strip.placement = "outside",
+   axis.text = element_text(size = 6),
+   axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+   axis.text.y = element_text(face = "italic"),
+   legend.position = "bottom", 
+   strip.background = element_blank(),
+   ggh4x.facet.nestline = element_line(colour = "blue")
+    )
+
+ggsave(here("Figures", "final", "Bubble_combined_Lep_Hym.pdf"), height = 237, width = 169, units = "mm", plot = LepHym)
+
+ggsave(here("Figures", "final", "Bubble_combined_other.pdf"), height = 237, width = 169, units = "mm", plot = Other)
+
+```
+
+#Diversity 
+
+## by site
+_
+```{r}
+
+sampleInfo_stat <- 
+  sampleInfo %>% 
+  filter(!ID %in% c( "TEST", "CLEAN2")) %>% 
+  mutate(Site = substr(Station, 1, 1)) %>% 
+  split(.$Site)
+
+ASV_16S_art <- ASV_16S[, colnames(ASV_16S) %in% 
+                         tax_16S_clean[
+                           tax_16S_clean$phylum ==
+                             "Arthropoda",]$seq]
+
+ASV_COI_art <- ASV_COI[, colnames(ASV_COI) %in% 
+                         tax_COI_clean[
+                           tax_COI_clean$phylum ==
+                             "Arthropoda",]$seq]
+
+
+all_16S <- 
+lapply(sampleInfo_stat, function(x){
+  
+  specaccum(ASV_16S[rownames(ASV_16S) %in% x$Sample,])[c("sites", "richness", "sd")] %>% 
+  as.data.frame()
+  
+}) %>% 
+  bind_rows(.id = "Station") %>% 
+  mutate(marker = "16S") %>% 
+  mutate(group = "all")
+
+art_16S <- 
+lapply(sampleInfo_stat, function(x){
+  
+  specaccum(ASV_16S_art[rownames(ASV_16S_art) %in% x$Sample,])[c("sites", "richness", "sd")] %>% 
+  as.data.frame()
+  
+}) %>% 
+  bind_rows(.id = "Station") %>% 
+  mutate(marker = "16S") %>% 
+  mutate(group = "Arthropods")
+
+all_COI <- 
+lapply(sampleInfo_stat, function(x){
+  
+  specaccum(ASV_COI[rownames(ASV_COI) %in% x$Sample,])[c("sites", "richness", "sd")] %>% 
+  as.data.frame()
+  
+}) %>% 
+  bind_rows(.id = "Station") %>% 
+  mutate(marker = "COI") %>% 
+  mutate(group = "all")
+
+art_COI <- 
+lapply(sampleInfo_stat, function(x){
+  
+  specaccum(ASV_COI_art[rownames(ASV_COI_art) %in% x$Sample,])[c("sites", "richness", "sd")] %>% 
+  as.data.frame()
+  
+}) %>% 
+  bind_rows(.id = "Station") %>% 
+  mutate(marker = "COI") %>% 
+  mutate(group = "Arthropods")
+
+
+rbind(all_16S, art_16S,all_COI,art_COI) %>% 
+   mutate(Volume = case_when(
+    Station == "E" ~ sites * 9, 
+    Station == "S" ~ sites * 6, 
+    Station == "I" ~ sites * 6)) %>% 
+  mutate(Station = case_when(
+    Station == "E" ~ "Moths site", 
+    Station == "S" ~ "Pollinator site", 
+    Station == "I" ~ "Beech forest")) %>% 
+ggplot( aes(x = Volume, y= richness, fill = Station))+
+  #geom_point()+
+  geom_line(colour = "black")+
+  geom_ribbon(aes(ymax = richness + sd, ymin = richness - sd), alpha = 0.5, colour = "NA")+
+  facet_wrap(~group + marker, 
+             scales = "free",
+             labeller =
+               label_wrap_gen(multi_line=FALSE))+
+  theme_minimal()+
+  scale_fill_manual(values = c(met.brewer("Isfahan2", 3)[c(2,3,1)]))+
+  theme(panel.grid.major = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_blank())+
+  labs(y = "sequence richness", x = bquote('cumulative volume of air'~(m^3)),
+       title = "species accumulation curves")+
+  guides(fill=guide_legend(nrow=2,byrow=TRUE))
+
+ggsave(here("Figures", "final", "Specaccum.pdf"), width = 80, height = 100, units = "mm")
+
+ggsave(here("Figures", "Specaccum.jpeg"), width = 6, height = 4)
+  
+```
+
+## by habitat
+```{r}
+sampleInfo_stat <- 
+  sampleInfo %>% 
+  filter(grepl("^S", ID), perl = TRUE) %>% 
+  split(.$habitat)
+
+ASV_16S_art <- ASV_16S[, colnames(ASV_16S) %in% 
+                         tax_16S_clean[
+                           tax_16S_clean$phylum ==
+                             "Arthropoda",]$seq]
+
+ASV_COI_art <- ASV_COI[, colnames(ASV_COI) %in% 
+                         tax_COI_clean[
+                           tax_COI_clean$phylum ==
+                             "Arthropoda",]$seq]
+
+
+all_16S <- 
+lapply(sampleInfo_stat, function(x){
+  
+  specaccum(ASV_16S[rownames(ASV_16S) %in% x$Sample,])[c("sites", "richness", "sd")] %>% 
+  as.data.frame()
+  
+}) %>% 
+  bind_rows(.id = "Station") %>% 
+  mutate(marker = "16S") %>% 
+  mutate(group = "all")
+
+art_16S <- 
+lapply(sampleInfo_stat, function(x){
+  
+  specaccum(ASV_16S_art[rownames(ASV_16S_art) %in% x$Sample,])[c("sites", "richness", "sd")] %>% 
+  as.data.frame()
+  
+}) %>% 
+  bind_rows(.id = "Station") %>% 
+  mutate(marker = "16S") %>% 
+  mutate(group = "Arthropods")
+
+all_COI <- 
+lapply(sampleInfo_stat, function(x){
+  
+  specaccum(ASV_COI[rownames(ASV_COI) %in% x$Sample,])[c("sites", "richness", "sd")] %>% 
+  as.data.frame()
+  
+}) %>% 
+  bind_rows(.id = "Station") %>% 
+  mutate(marker = "COI") %>% 
+  mutate(group = "all")
+
+art_COI <- 
+lapply(sampleInfo_stat, function(x){
+  
+  specaccum(ASV_COI_art[rownames(ASV_COI_art) %in% x$Sample,])[c("sites", "richness", "sd")] %>% 
+  as.data.frame()
+  
+}) %>% 
+  bind_rows(.id = "Station") %>% 
+  mutate(marker = "COI") %>% 
+  mutate(group = "Arthropods")
+
+
+
+rbind(all_16S, art_16S,all_COI,art_COI) %>% 
+  mutate(Volume = sites *2) %>% 
+ggplot( aes(x = Volume, y= richness, fill = Station))+
+  #geom_point()+
+  geom_line(colour = "black")+
+  geom_ribbon(aes(ymax = richness + sd, ymin = richness - sd), alpha = 0.5, colour = "NA")+
+  facet_wrap(~marker+group, 
+             scales = "free",
+             labeller =
+               label_wrap_gen(multi_line=FALSE))+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Set1")+
+  theme(panel.grid.major = element_blank())+
+  labs(y = "sequence richness", x = bquote('cumulative volume of air'~(m^3)),
+       title = "species accumulation curves")
+  
+```
+
+#NMDS
+
+##make phyloseq objects
+```{r}
+
+#COI
+tax_COI_clean_m <- as.matrix(tax_COI_clean[,-1])
+rownames(tax_COI_clean_m) <- tax_COI_clean$seq
+
+sampleInfo <- 
+  as.data.frame(sampleInfo) %>% 
+  filter(!Station %in% c("TEST", "CLEAN"))
+  
+rownames(sampleInfo) <- sampleInfo$Sample
+
+sampleInfo$Station %>% unique
+
+ps_coi <- phyloseq(otu_table(ASV_COI+1, taxa_are_rows = FALSE),
+                   tax_table(tax_COI_clean_m),
+                   sample_data(sampleInfo))
+
+#16S
+tax_16S_clean_m <- as.matrix(tax_16S_clean[,-1])
+rownames(tax_16S_clean_m) <- tax_16S_clean$seq
+
+ps_16S <- phyloseq(otu_table(ASV_16S+1, taxa_are_rows = FALSE),
+                   tax_table(tax_16S_clean_m),
+                   sample_data(sampleInfo))
+```
+
+## all seqs
+### COI
+
+```{r}
+d2_coi <- phyloseq_to_deseq2(ps_coi, ~ Station)
+
+VST_coi <- t(assay(varianceStabilizingTransformation(d2_coi, blind = T)))
+
+VST_coi[VST_coi < 0 ]  <- 0
+
+dist_coi <- vegdist(VST_coi, distance = "bray")
+
+NMDS_coi <- metaMDS(dist_coi, autotransform = FALSE, trace = 0)
+
+NMDS_coi
+
+points_coi <- NMDS_coi$points %>% 
+  data.frame() %>% 
+  tibble::rownames_to_column(var = "Sample") %>% 
+  left_join(.,sampleInfo) 
+
+hull <- points_coi %>%
+  group_by(Station) %>%
+  dplyr::slice(chull(MDS1, MDS2))
+
+
+points_coi %>% 
+  ggplot(aes(x = MDS1, y =MDS2, colour = Site_name, 
+                   fill = Site_name, group = ClusterName))+
+  geom_point(size = 2)+
+  annotate(geom = "text", x = -0.4, y = 0.3, label = paste("stress = ", round(NMDS_coi$stress, 2), sep = ""), colour = "black")+
+  theme_bw()+
+  theme(legend.position = "bottom",
+        legend.title = element_blank())+
+  ggtitle("COI - all sequences")+
+  scale_colour_manual(values = c(met.brewer("Isfahan2", 3)[c(2,3,1)]), name = "Station")+
+  scale_fill_manual(values = c(met.brewer("Isfahan2", 3)[c(2,3,1)]), name = "Station")+
+  scale_shape_manual(values = c(16,24))+
+  geom_polygon(data = hull, alpha = 0.3)+
+  scale_alpha_manual(values = c(0.4, 0))+
+  guides(colour=guide_legend(nrow=2,byrow=TRUE))
+
+ggsave(here("Figures", "final", "NMDS_COI.pdf"), width = 80, height = 100, units = "mm")
+
+```
+
+### stats
+```{r}
+#overall station effect
+adonis2(dist_coi ~ Station, data = filter(sampleInfo, Sample %in% rownames(VST_coi)))
+
+#station effect for Pollinator site
+VST_PS <- VST_coi[rownames(VST_coi) %in% sampleInfo[grepl("S", sampleInfo$Station), ]$Sample,]
+
+VST_PS <- VST_PS[, colSums(VST_PS) > 0]
+
+adonis2(VST_PS ~ Station + habitat, data = filter(sampleInfo, Sample %in% rownames(VST_PS)), dist = "bray")
+
+#check for homogeneity of dispersion for overall station effect
+
+VST_coi_dist <- vegdist(VST_coi, method = "bray")
+
+group <- filter(sampleInfo, Sample %in% rownames(VST_coi)) %>% pull(Station)
+
+anova(betadisper(VST_coi_dist, group = group))
+
+#check for homogeneity of dispersion for Pollinator site
+
+VST_PS_dist <- vegdist(VST_PS, method = "bray")
+
+group_PS <- filter(sampleInfo, Sample %in% rownames(VST_PS)) %>% pull(Station)
+
+anova(betadisper(VST_PS_dist, group = group_PS))
+
+
+```
+
+
+### 16S
+
+```{r}
+d2_16S <- phyloseq_to_deseq2(ps_16S, ~ Station)
+
+VST_16S <- t(assay(varianceStabilizingTransformation(d2_16S, blind = T)))
+
+VST_16S[VST_16S < 0 ]  <- 0
+
+dist_16S <- vegdist(VST_16S, distance = "bray")
+
+NMDS_16S <- metaMDS(dist_16S, autotransform = FALSE, trace = 0)
+
+points_16S <- NMDS_16S$points %>% 
+  data.frame() %>% 
+  tibble::rownames_to_column(var = "Sample") %>% 
+  left_join(.,sampleInfo) 
+
+hull <- points_16S %>%
+  group_by(Station) %>%
+  dplyr::slice(chull(MDS1, MDS2))
+
+#p1 <- 
+ggplot(points_16S, aes(x = MDS1, y =MDS2, colour = Station, 
+                   fill = Station))+
+  geom_point(size = 2)+
+  #geom_text(aes(label = sample), nudge_x= 0.02, size = 2)+
+  theme_bw()+
+#  ggtitle("16S composition - bray curtis 2017")+
+  scale_colour_brewer(palette = "Set1", name = "Treatment")+
+  scale_fill_brewer(palette = "Set1", name = "Treatment")+
+  scale_shape_manual(values = c(16,24))+
+  geom_polygon(data = hull, alpha = 0.3)+
+  scale_alpha_manual(values = c(0.4, 0))
+
+#ggsave(filename = "../figures/NMDS_16S_2017.pdf",plot = p1, width = 8, height = 6)
+```
+
+
+## numbers for results
+
+```{r}
+#number of seqs
+tax_COI_clean %>% nrow()
+tax_16S_clean %>% nrow()
+```
+
+
+```{r}
+#number of Fungi
+tax_COI_clean %>% filter(phylum == "Basidiomycota") %>% nrow()
+tax_COI_clean %>% filter(phylum == "Ascomycota") %>% nrow()
+```
+
+
+```{r}
+#number of phyla
+tax_COI_clean %>% pull(phylum) %>% unique %>% length
+tax_16S_clean %>% pull(phylum) %>% unique
+```
+
+
+```{r}
+#number of Arthropods
+tax_COI_clean %>% filter(phylum == "Arthropoda") %>% nrow()
+tax_16S_clean %>% filter(phylum == "Arthropoda") %>% nrow()
+```
+
+
+```{r}
+#number of insects
+tax_16S_clean %>% filter(class == "Insecta") %>% nrow()
+tax_COI_clean %>% filter(class == "Insecta") %>% nrow()
+```
+
+
+```{r}
+#number of unique insects id'd to species level
+Insect_uniq_coi <- 
+tax_COI_clean %>% 
+  filter(class == "Insecta") %>% 
+  filter(!is.na(species)) %>% 
+  pull(species) %>% 
+  unique() 
+
+length(Insect_uniq_coi)
+```
+
+
+```{r}
+Insect_uniq_16S <- 
+tax_16S_clean %>% 
+  filter(class == "Insecta") %>%
+  filter(!is.na(species)) %>%
+  pull(species) %>% 
+  unique() 
+
+length(Insect_uniq_16S)
+```
+
+
+```{r}
+unique(c(Insect_uniq_coi, Insect_uniq_16S)) %>% length()
+```
+
+
+```{r}
+#number of Arthropods at species level
+COI_art_spec <- 
+tax_COI_clean %>% 
+   filter(phylum == "Arthropoda") %>% 
+    filter(!is.na(species)) %>% 
+    pull(species) %>% 
+    unique()
+
+length(COI_art_spec)
+```
+
+
+```{r}
+art_spec_16S <- 
+tax_16S_clean %>% 
+   filter(phylum == "Arthropoda") %>% 
+    filter(!is.na(species)) %>% 
+    pull(species) %>% 
+    unique()
+
+length(art_spec_16S)
+```
+
+
+```{r}
+unique(c(COI_art_spec, art_spec_16S)) %>% length()
+```
+
+
+```{r}
+#percent fungal reads
+ASV_fung <- tax_COI_clean %>% filter(phylum %in% c("Basidiomycota", "Ascomycota")) %>% pull(seq)
+
+sum(ASV_COI[,ASV_fung])/sum(ASV_COI)                             
+                                     
+```
+
