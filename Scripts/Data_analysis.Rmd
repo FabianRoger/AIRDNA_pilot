@@ -3,8 +3,6 @@ title: "Data_analysis_final"
 output: html_notebook
 ---
 
-## check Fulmekiola species --> wrongly assigned
-
 ```{r}
 library(readr)
 library(dplyr)
@@ -56,9 +54,6 @@ seq_COI <- readDNAStringSet(tmpFastaCoi)
 tmpFasta16S <- tempfile("file1", fileext = ".fasta")
 download.file(url = "https://figshare.com/ndownloader/files/30448443", tmpFasta16S)
 seq_16S <- readDNAStringSet(tmpFasta16S)
-
-#taxonomic assignment with boldigger for COI 
-tax_COI_bd <- read_tsv(here("Data", "boldiger", "COI_boldiger_tax.txt"))
 
 # sample meta-data
 sampleInfo <- read_tsv(url("https://figshare.com/ndownloader/files/30448434")) 
@@ -173,12 +168,12 @@ select(ASV_16S, pull(blank_16S, seq)) %>%
 ```
 
 COI: 
-the blank sample contains 11 sequences for COI. Only 4 have a taxonomic assignments at Kingdom level. 2 have a certain species level assignment:  *Caradina Sp.* and *Corbicula fluminea*. We have confirmed *Caradina sp.* as lab contamination (100 % match, extraction on that species were performed during the same time in the lab as our samples). The sequences was present in all samples. *Corbicula fluminea* was only present in the blank but we cannot confirm the origin of this sequence. 
+the blank sample contains 11 sequences for COI. Only 4 have a taxonomic assignments at Kingdom level. 2 have a certain species level assignment:  *Caradina Sp.* and *Corbicula fluminea*. We have confirmed *Caradina sp.* as lab contamination (100 % match, extraction on that species were performed during the same time in the lab as our samples). The sequences was present in all samples. *Corbicula fluminea* is a miss-assigned sequence as it has a perfect match to teh bacterial sequence *Ralstonia pickettii* (BLAST). It was only present in the blank but we cannot confirm the origin of this sequence. 
 
 seq_0010, which is identified as a Coleoptera here, is in fact a human sequence. The Sequence is miss-assigned in the Sintax reference database (checked manually)
 
 16S: 
-the blank sample contains 9 sequences for 16S. Only one has a taxonomic assignment that is trustworthy, *Sus scrofa*, which is the wild boar / domestic pig and could be a contamination from the sterile sampling location as it only occurs in that sample. Seq_0009 is very likely the same Caradina contamination as it also occurs in (almost) all samples
+the blank sample contains 9 sequences for 16S. The three sequences identified as *Thrips flavidulus* are human sequences accounting for 84088 (86%) of the reads. Among teh other reads, only one has a taxonomic assignment that is trustworthy, *Sus scrofa*, which is the wild boar / domestic pig and could be a reagent contamination or a contamination from the sterile sampling location as it only occurs in that sample. Seq_0009 is very likely the same Caradina contamination as it also occurs in (almost) all samples
 
 All sequences present in the negative control are removed from all samples
 
@@ -200,6 +195,9 @@ humans_16S <-
   tax_16S_60 %>% 
   filter(order == "Primates" | genus == "Thrips") %>% 
   pull(seq)
+
+sum(ASV_COI[,humans_coi]) / sum(ASV_COI) *100
+sum(ASV_16S[,humans_16S]) / sum(ASV_16S) *100
 ```
 
 for COI we exclude 2 sequences
@@ -225,6 +223,8 @@ tax_COI_60 %>%
   pull(seq)
 
 #not present in 16S (or not identified to species level in 16S)
+
+sum(ASV_COI[,contam_coi]) / sum(ASV_COI) *100
 ```
 
 4) the most abundant Arthropod in both COI and 16S is a fly (Metopina pileata) and it's reads are concentrated in two samples (SI1 & SI3)
@@ -246,6 +246,9 @@ ASV_COI[, "seq_0001", drop = FALSE] %>%
 
 fly_COI <- "seq_0001"
 fly_16S <- c("seq_0002", "seq_0645")
+
+sum(ASV_COI[,fly_COI]) / sum(ASV_COI) *100
+sum(ASV_16S[,fly_16S]) / sum(ASV_16S) *100
 ```
 
 
@@ -283,6 +286,10 @@ In total this quality filtering removes 78.8% of the sequences, accounting for 9
 #check species
 
 for those species that are identified as Arthropods or Vertebrates, we double check the entries via blast
+
+''''''''''''''''
+(this code does not need to be run to continue with the script. To un the remainder of the script jump to ## consensus taxonomy)
+''''''''''''''''
 
 ## COI
 ```{r}
@@ -489,7 +496,12 @@ tax_COI_clean <-
 ```
 
 
-#16S
+##16S
+
+''''''''''''''''
+(this code does not need to be run to continue with the script. To un the remainder of the script jump to ## consensus taxonomy)
+''''''''''''''''
+
 ```{r}
 Animal_seq_16S <- 
 tax_16S_clean %>% 
@@ -669,6 +681,8 @@ I set the Genus & species level to NA
 
 ## consensus taxonomy
 ```{r}
+#read ncbi_16S_u_tax from figshare
+ncbi_16S_u_tax <- read_tsv(url("https://figshare.com/ndownloader/files/33897374"))
 
 #keep ncbi seqs
 seq_keep_ncbi <- c("seq_0833", "seq_0902", "seq_0037","seq_0544", "seq_1589")
@@ -978,7 +992,7 @@ ggarrange(
   common.legend = TRUE, legend = "bottom", ncol = 1, heights = c(14/14, 8/14, 13/14)
   )
 
-ggsave(here("Figures", "final", "Taxa_distribution.pdf"), width = 112, height = 160, units = "mm")
+ggsave(here("Figures", "Taxa_distribution.pdf"), width = 112, height = 160, units = "mm")
 ```
 
 
@@ -1418,14 +1432,13 @@ my_legend
 ),
 
 ncol = 1, 
-heights = c(2, 2, 2, 2, 1))
+heights = c(3, 3, 3, 3, 1))
 
 
 
-ggsave(filename = here("Figures", "final", "Euler_combined.pdf"),
+ggsave(filename = here("Figures", "Euler_combined.pdf"),
        plot = eulerP, width = 80, units = "mm")
-  
-?arrangeGrob
+
 
 ```
 
@@ -1719,9 +1732,9 @@ ggplot(Bubble_data_LepHym, aes(x = species, y = method, fill = method, size = ab
    ggh4x.facet.nestline = element_line(colour = "blue")
     )
 
-ggsave(here("Figures", "final", "Bubble_combined_Lep_Hym.pdf"), height = 237, width = 169, units = "mm", plot = LepHym)
+ggsave(here("Figures", "Bubble_combined_Lep_Hym.pdf"), height = 237, width = 169, units = "mm", plot = LepHym)
 
-ggsave(here("Figures", "final", "Bubble_combined_other.pdf"), height = 237, width = 169, units = "mm", plot = Other)
+ggsave(here("Figures", "Bubble_combined_other.pdf"), height = 237, width = 169, units = "mm", plot = Other)
 
 ```
 
@@ -1819,7 +1832,7 @@ ggplot( aes(x = Volume, y= richness, fill = Station))+
        title = "species accumulation curves")+
   guides(fill=guide_legend(nrow=2,byrow=TRUE))
 
-ggsave(here("Figures", "final", "Specaccum.pdf"), width = 80, height = 100, units = "mm")
+ggsave(here("Figures", "Specaccum.pdf"), width = 80, height = 100, units = "mm")
 
 ggsave(here("Figures", "Specaccum.jpeg"), width = 6, height = 4)
   
@@ -1971,7 +1984,7 @@ points_coi %>%
   theme_bw()+
   theme(legend.position = "bottom",
         legend.title = element_blank())+
-  ggtitle("COI - all sequences")+
+  ggtitle("COI - all OTUs")+
   scale_colour_manual(values = c(met.brewer("Isfahan2", 3)[c(2,3,1)]), name = "Station")+
   scale_fill_manual(values = c(met.brewer("Isfahan2", 3)[c(2,3,1)]), name = "Station")+
   scale_shape_manual(values = c(16,24))+
@@ -1979,7 +1992,7 @@ points_coi %>%
   scale_alpha_manual(values = c(0.4, 0))+
   guides(colour=guide_legend(nrow=2,byrow=TRUE))
 
-ggsave(here("Figures", "final", "NMDS_COI.pdf"), width = 80, height = 100, units = "mm")
+ggsave(here("Figures", "NMDS_COI.pdf"), width = 80, height = 100, units = "mm")
 
 ```
 
@@ -2073,7 +2086,7 @@ tax_COI_clean %>% filter(phylum == "Ascomycota") %>% nrow()
 ```{r}
 #number of phyla
 tax_COI_clean %>% pull(phylum) %>% unique %>% length
-tax_16S_clean %>% pull(phylum) %>% unique
+tax_16S_clean %>% pull(phylum) %>% unique %>% length
 ```
 
 
