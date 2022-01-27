@@ -87,6 +87,40 @@ length(files_COI) == 64
 file.copy(files_COI, here("Data", "Sequencing_data", "COI", "raw"))
 ```
 
+count number of reads in raw files
+```{r}
+files_fastq_fwrd <- files_fastq[grepl("_R1_", files_fastq)]
+names(files_fastq_fwrd) <- gsub(".+?([A-Z,0-9]+_[0-9]+).+", "\\1", files_fastq_fwrd)
+
+read_number <- 
+lapply(files_fastq_fwrd, function(x) {
+  
+  system(paste("gunzip -c ", x, " | wc -l", sep = ""), intern = TRUE)
+  
+})
+
+read_number <- 
+read_number %>% 
+  bind_rows() %>% 
+  pivot_longer(everything(), names_to = "Sample", values_to = "reads") %>%
+  mutate(reads = as.numeric(reads)/4) %>% 
+  left_join(sampleInfo)
+
+#total reads
+read_number$reads %>% sum
+
+#total reads by marker
+read_number %>% 
+  group_by(Barcode) %>% 
+  summarise(reads = sum(reads))
+
+#median, min and max
+read_number %>% 
+  summarise(min = min(reads),
+            max = max(reads),
+            median = median(reads))
+```
+
 
 define path variable that points to extracted, unmerged, sequencing reads
 
@@ -505,7 +539,6 @@ seqs <- readDNAStringSet(here("Data", "COI_ASVs.fasta"))
 colnames(seqtab.nochim_rlen) <- names(seqs)
 
 write_rds(seqtab.nochim_rlen, here("Data", "COI_seqtab.nochim_rl.RDS"))
-
 #seqtab.nochim_rlen <- read_rds(here("Data", "COI_seqtab.nochim_rl.RDS"))
 ```
 
