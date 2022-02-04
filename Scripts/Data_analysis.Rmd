@@ -7,6 +7,7 @@ output: html_notebook
 library(readr)
 library(dplyr)
 library(tidyr)
+library(purrr)
 library(ggplot2)
 library(here)
 library(ggrepel)
@@ -292,7 +293,7 @@ for those species that are identified as Arthropods or Vertebrates, we double ch
 ''''''''''''''''
 
 ## COI
-```{r}
+```{r, eval=FALSE}
 Arth_seq_coi <- 
 tax_COI_clean %>% 
   filter(kingdom == "Animalia") %>% 
@@ -306,7 +307,7 @@ seq_COI[Arth_seq_coi] %>%
 --> megablast the exported fasta file against the ncbi nt database (https://blast.ncbi.nlm.nih.gov/Blast.cgi)
 --> download hits as CSV table and save as 
 
-```{r}
+```{r, eval=FALSE}
 COI_ncbi <- read_csv(here("Data", "NCBI_Animalia_coi.csv"), col_names = FALSE)
 
 colnames(COI_ncbi) <- c("query","subject","prct_identity","alignment_length","mismatches","gap_opens","q_start","q_end","s_start","s_end","evalue","bit_score")
@@ -315,7 +316,7 @@ colnames(COI_ncbi) <- c("query","subject","prct_identity","alignment_length","mi
 
 1) filter hits for best hit
 
-```{r}
+```{r, eval=FALSE}
 COI_ncbi_u <- 
   COI_ncbi %>% 
   select(query, subject, prct_identity, alignment_length, bit_score) %>% 
@@ -329,7 +330,7 @@ add taxonomy from accession number
 
 (works if there are not too many accession numbers to check. Otherwise the taxonomizr package provides an offline solution but requires the download of the database)
 
-```{r}
+```{r, eval=FALSE}
 
 id_to_taxa <- COI_ncbi_u %>% 
   filter(!is.na(subject)) %>% 
@@ -364,7 +365,7 @@ I filter taxa hits by bitscore and check sequences with multiple best hits manua
 
 multiple best hits
 
-```{r}
+```{r, eval=FALSE}
 COI_ncbi_u <- 
 COI_ncbi_u %>% 
   group_by(query) %>% 
@@ -377,7 +378,7 @@ COI_ncbi_u %>%
   pull(query) %>% unique()
 ```
 
-```{r}
+```{r, eval=FALSE}
 
 COI_ncbi_u[COI_ncbi_u$query == "seq_0114",]$name <- "Canis lupus" #dogs and wulfs cannot be told appart
 COI_ncbi_u[COI_ncbi_u$query == "seq_0657",]$name <- "Liposcelis sp." #multiple perfect matches
@@ -388,7 +389,7 @@ COI_ncbi_u[COI_ncbi_u$query == "seq_0952",]$name <- "Harmonia axyridis" #checked
 COI_ncbi_u[COI_ncbi_u$query == "seq_1213",]$name <- "Oryctolagus cuniculus"
 COI_ncbi_u[COI_ncbi_u$query == "seq_1294",]$name <- "Smittia stercoraria"
 COI_ncbi_u[COI_ncbi_u$query == "seq_1374",]$name <- "Lycoriella sp." #multiple perfect matches + majority rule
-COI_ncbi_u[COI_ncbi_u$query == "seq_1716",]$name <- "Pelophylax lessonae"#the BOLD entry was not id to species 
+COI_ncbi_u[COI_ncbi_u$query == "seq_1716",]$name <- "Pelophylax ridibundus"#this a manual correction as this sequences matches both Pelophylax ridibundus and P. lessonae but the former is common and abundant in a pond near the detection site but the latter is rare and absent from that site.
 COI_ncbi_u[COI_ncbi_u$query == "seq_1767",]$name <- "Sphaerophoria sp." #multiple perfect matches
 COI_ncbi_u[COI_ncbi_u$query == "seq_1952",]$name <- "Diplonevra nitidula" #the BOLD entry was not id to species 
 COI_ncbi_u[COI_ncbi_u$query == "seq_2153",]$name <- "Drosophila immigrans" #the BOLD entry was not id to species 
@@ -406,7 +407,7 @@ seq_3332 is likely Wolbachia and not an Insect
 
 best hits of low quality
 
-```{r}
+```{r, eval=FALSE}
 COI_ncbi_u %>% 
   group_by(query) %>% 
   dplyr::slice(1) %>%
@@ -419,7 +420,7 @@ seq_3939 has only a 90% id hit to a know contaminant. It might be a chimeric seq
 seq_2470 has as best hit a filamentous bacteria
 
 make unique species table
-```{r}
+```{r, eval=FALSE}
 COI_ncbi_u <- 
   COI_ncbi_u %>% 
   select(query, name) %>% 
@@ -429,7 +430,7 @@ COI_ncbi_u <-
 
 
 harmonizing taxonomy and adding higher taxonomic levels with gbif backbone
-```{r}
+```{r, eval=FALSE}
 
 
 COI_ncbi_gbif <- 
@@ -450,15 +451,18 @@ COI_ncbi_u_tax <- read_tsv(here("Data", "COI_ncbi.txt"))
 ```
 compare to Sintax
 
-```{r}
+```{r, eval=FALSE}
 tax_COI_clean %>% 
   filter(seq %in% Arth_seq_coi) %>% 
   select(seq, phylum, genus, species) %>% 
   left_join(select(COI_ncbi_u_tax, seq, phylum, genus, species), by = "seq") %>% 
-  filter(is.na(species.x) != is.na(species.y)) 
+  filter(is.na(species.x) != is.na(species.y) | species.x != species.y) 
 ```
 
-The assignemnt over ncbi Blast yields no conflicting assignments, neither at genus nor at species level. However, there are some assignment that are missing a species level assigments in one of the two dataframes. We find a consensus manually. 
+The assignemnt over ncbi Blast yields only one conflicting assignment, the manually renamed pool frog Pelophylax ridibundus (see above). However, there are some assignment that are missing a species level assigments in one of the two dataframes. We find a consensus manually. 
+
+seq_1716
+is Pelophylax ridibundus
 
 seq_3332
 is Wolbachia
@@ -476,7 +480,7 @@ seq_1294, seq_1507, seq_2625, seq_2993, seq_3050, seq_3342, seq_3690
 These sequences hav species level assignment with NCBI but not with Sintax. We keep only the Genus level. 
 
 ## consensus taxonomy
-```{r}
+```{r, eval=FALSE}
 seq_to_genus <- c("seq_0657","seq_0803","seq_1374","seq_1767","seq_2969",
   "seq_3122","seq_3745","seq_3869","seq_1294","seq_1507",
   "seq_2625","seq_2993","seq_3050","seq_3342","seq_3690")
@@ -493,6 +497,9 @@ tax_COI_clean <-
 tax_COI_clean <-
   tax_COI_clean %>% 
   filter(!seq %in% seq_excl)
+
+#change pool frog to edible frog
+tax_COI_clean[tax_COI_clean$seq == "seq_1716", "species"] <- "Pelophylax ridibundus"
 ```
 
 
