@@ -57,7 +57,7 @@ download.file(url = "https://figshare.com/ndownloader/files/30448443", tmpFasta1
 seq_16S <- readDNAStringSet(tmpFasta16S)
 
 # sample meta-data
-sampleInfo <- read_tsv(url("https://figshare.com/ndownloader/files/30448434")) 
+sampleInfo <- read_tsv(url("https://figshare.com/ndownloader/files/34001870")) 
 
 #Transect-walk Data
 Insects <- read_tsv(url("https://figshare.com/ndownloader/files/30448431"))
